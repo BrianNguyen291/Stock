@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from charts import candlestick_chart
 from comparison import render_comparison
 from data_processor import load_data
 
@@ -104,6 +105,10 @@ def main() -> None:
     chart_data = filtered.set_index("date")[["close"]].rename(columns={"close": "收盤價"})
     st.subheader("收盤價走勢")
     st.line_chart(chart_data)
+
+    st.subheader("K 線圖")
+    st.caption("紅 K：收盤高於開盤；綠 K：收盤低於開盤。")
+    st.pyplot(candlestick_chart(filtered, title=f"{stock_label} 日 K 線"))
 
     left, right = st.columns(2)
     with left:
