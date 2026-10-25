@@ -40,7 +40,8 @@ jobs:
       - name: Install dependencies and run tests
         run: |
           python -m pip install -r requirements.txt
-          python -m unittest discover -s tests
+          python -m pip install pytest
+          python -m pytest tests
 
       - name: Package Windows Python app
         shell: pwsh
