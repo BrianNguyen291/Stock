@@ -1,8 +1,9 @@
-"""國巨 (2327) 臺灣證券交易所歷史日交易資料爬蟲。
+"""臺灣證券交易所個股歷史日交易資料爬蟲（預設國巨 2327）。
 
 使用範例：
     python crawler.py --start 2026-09-01 --end 2026-09-30
     python crawler.py --start 2026-01-01 --end 2026-10-21
+    python crawler.py --stock 2492 --start 2026-01-01 --end 2026-10-21 --output 2492.csv
 """
 
 import argparse
@@ -18,8 +19,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 API_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY"
-STOCK_ID = "2327"
-STOCK_NAME = "國巨"
+DEFAULT_STOCK_ID = "2327"
 FIELDS = [
     "date", "stock_id", "stock_name", "trade_volume", "trade_value",
     "open", "high", "low", "close", "change", "transaction_count", "note",
@@ -51,10 +51,22 @@ def roc_to_iso(value):
 
 def parse_number(value, integer=False):
     cleaned = str(value).strip().replace(",", "").replace("+", "")
-    if cleaned in ("", "--", "---", "X", "x", "N/A"):
+    # 除權息等「不比價」交易日，漲跌價差會以 X 開頭（例如 X0.00），無實際漲跌意義。
+    if cleaned in ("", "--", "---", "N/A") or cleaned[0] in ("X", "x"):
         return ""
     number = float(cleaned)
     return int(number) if integer else number
+
+
+def parse_stock_name(title, stock_id):
+    # title 範例："115年10月 2327 國巨           各日成交資訊"
+    parts = str(title or "").split()
+    if stock_id in parts:
+        index = parts.index(stock_id)
+        if index + 1 < len(parts) and parts[index + 1] != "各日成交資訊":
+            # 部分月份名稱後會帶 * 註記，例如「國巨*」
+            return parts[index + 1].rstrip("*")
+    return ""
 
 
 def create_session():
@@ -77,10 +89,10 @@ def create_session():
     return session
 
 
-def fetch_month(session, month):
+def fetch_month(session, month, stock_id):
     params = {
         "date": month.strftime("%Y%m%d"),
-        "stockNo": STOCK_ID,
+        "stockNo": stock_id,
         "response": "json",
     }
     response = session.get(API_URL, params=params, timeout=(10, 30))
@@ -100,6 +112,7 @@ def fetch_month(session, month):
         raise ValueError(f"證交所欄位變更，缺少：{missing}")
     idx = {name: fields.index(name) for name in required}
     note_idx = fields.index("註記") if "註記" in fields else None
+    stock_name = parse_stock_name(payload.get("title"), stock_id)
     result = []
     for raw in raw_rows:
         if len(raw) < len(required):
@@ -108,8 +121,8 @@ def fetch_month(session, month):
         try:
             row = {
                 "date": roc_to_iso(raw[idx["日期"]]),
-                "stock_id": STOCK_ID,
-                "stock_name": STOCK_NAME,
+                "stock_id": stock_id,
+                "stock_name": stock_name,
                 "trade_volume": parse_number(raw[idx["成交股數"]], integer=True),
                 "trade_value": parse_number(raw[idx["成交金額"]], integer=True),
                 "open": parse_number(raw[idx["開盤價"]]),
@@ -126,7 +139,9 @@ def fetch_month(session, month):
     return result
 
 
-def crawl(start, end, output, delay):
+def crawl(start, end, output, delay, stock_id=DEFAULT_STOCK_ID):
+    if not stock_id.isdigit():
+        raise ValueError(f"股票代號格式錯誤：{stock_id!r}")
     if start > end:
         raise ValueError("起始日期不得晚於結束日期")
     if end > date.today():
@@ -138,9 +153,9 @@ def crawl(start, end, output, delay):
     with create_session() as session:
         months = list(month_starts(start, end))
         for index, month in enumerate(months, 1):
-            LOGGER.info("[%d/%d] 取得國巨 %s 資料", index, len(months), month.strftime("%Y-%m"))
+            LOGGER.info("[%d/%d] 取得 %s %s 資料", index, len(months), stock_id, month.strftime("%Y-%m"))
             try:
-                for row in fetch_month(session, month):
+                for row in fetch_month(session, month, stock_id):
                     if start.isoformat() <= row["date"] <= end.isoformat():
                         results[row["date"]] = row
             except (requests.RequestException, ValueError) as exc:
@@ -163,15 +178,17 @@ def crawl(start, end, output, delay):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="國巨（2327）股價歷史資料爬蟲")
+    parser = argparse.ArgumentParser(description="臺灣證券交易所個股歷史資料爬蟲")
+    parser.add_argument("--stock", default=DEFAULT_STOCK_ID, help="股票代號，例如 2327、2492")
     parser.add_argument("--start", type=parse_date, default=date(2026, 9, 1), help="開始日期 YYYY-MM-DD")
     parser.add_argument("--end", type=parse_date, default=date(2026, 9, 30), help="結束日期 YYYY-MM-DD")
-    parser.add_argument("--output", type=Path, default=Path("data/raw/2327.csv"), help="CSV 輸出路徑")
+    parser.add_argument("--output", type=Path, default=None, help="CSV 輸出路徑，預設 data/raw/<股票代號>.csv")
     parser.add_argument("--delay", type=float, default=2.0, help="每月請求之間的間隔秒數，至少 1 秒")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
+    output = args.output or Path("data/raw") / f"{args.stock}.csv"
     try:
-        _, failures = crawl(args.start, args.end, args.output, args.delay)
+        _, failures = crawl(args.start, args.end, output, args.delay, args.stock)
     except (ValueError, RuntimeError) as exc:
         parser.error(str(exc))
     if failures:
