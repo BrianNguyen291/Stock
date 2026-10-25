@@ -5,12 +5,14 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from comparison import render_comparison
 from data_processor import load_data
 
 
 DATA_DIR = Path(__file__).parent
 STOCK_FILES = {
     "2327 國巨": DATA_DIR / "2327.csv",
+    "2492 華新科": DATA_DIR / "2492.csv",
 }
 
 
@@ -37,6 +39,13 @@ def main() -> None:
 
     with st.sidebar:
         st.header("查詢條件")
+        page = st.radio("功能", ["個股儀表板", "股票比較"], horizontal=True)
+
+    if page == "股票比較":
+        render_comparison(STOCK_FILES, read_stock_data)
+        return
+
+    with st.sidebar:
         stock_label = st.selectbox("選擇股票", list(STOCK_FILES))
 
     data_path = STOCK_FILES[stock_label]
