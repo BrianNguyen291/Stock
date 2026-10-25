@@ -70,10 +70,12 @@ def main() -> None:
             max_value=max_date,
         )
 
+    # 使用者剛點起始日、還沒點結束日時，date_input 會回傳只有一個日期的 tuple。
     if isinstance(selected_dates, tuple) and len(selected_dates) == 2:
         start_date, end_date = selected_dates
     else:
-        start_date = end_date = selected_dates
+        st.info("請選擇日期範圍的結束日期。")
+        st.stop()
 
     filtered = data[
         data["date"].dt.date.between(start_date, end_date)
@@ -96,11 +98,7 @@ def main() -> None:
     )
     metric_columns[1].metric("區間最高價", format_number(filtered["high"].max()))
     metric_columns[2].metric("區間最低價", format_number(filtered["low"].min()))
-    metric_columns[3].metric(
-        "最新成交量",
-        format_number(latest.get("trade_volume")),
-        "股",
-    )
+    metric_columns[3].metric("最新成交量（股）", format_number(latest.get("trade_volume")))
 
     chart_data = filtered.set_index("date")[["close"]].rename(columns={"close": "收盤價"})
     st.subheader("收盤價走勢")
