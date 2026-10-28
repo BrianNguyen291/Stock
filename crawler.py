@@ -5,7 +5,7 @@
     python crawler.py --start 2026-01-01 --end 2026-10-21
     python crawler.py --stock 2492 --start 2026-01-01 --end 2026-10-21 --output 2492.csv
 """
-
+import json
 import argparse
 import csv
 import logging
@@ -176,24 +176,137 @@ def crawl(start, end, output, delay, stock_id=DEFAULT_STOCK_ID):
         LOGGER.warning("以下月份抓取失敗，需要重新執行檢查：%s", ", ".join(failures))
     return rows, failures
 
+def load_stocks(config_path):
+    """讀取股票清單並檢查格式。"""
+    with open(config_path, "r", encoding="utf-8") as file:
+        config = json.load(file)
+
+    stocks = config.get("stocks", [])
+
+    if not isinstance(stocks, list) or not stocks:
+        raise ValueError("stocks.json 必須包含非空的 stocks 清單")
+
+    for stock in stocks:
+        if not isinstance(stock, str) or not stock.isdigit():
+            raise ValueError(f"無效股票代號：{stock}")
+
+    return list(dict.fromkeys(stocks))
+
 
 def main():
-    parser = argparse.ArgumentParser(description="臺灣證券交易所個股歷史資料爬蟲")
-    parser.add_argument("--stock", default=DEFAULT_STOCK_ID, help="股票代號，例如 2327、2492")
-    parser.add_argument("--start", type=parse_date, default=date(2026, 9, 1), help="開始日期 YYYY-MM-DD")
-    parser.add_argument("--end", type=parse_date, default=date(2026, 9, 30), help="結束日期 YYYY-MM-DD")
-    parser.add_argument("--output", type=Path, default=None, help="CSV 輸出路徑，預設 data/raw/<股票代號>.csv")
-    parser.add_argument("--delay", type=float, default=2.0, help="每月請求之間的間隔秒數，至少 1 秒")
-    args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
-    output = args.output or Path("data/raw") / f"{args.stock}.csv"
-    try:
-        _, failures = crawl(args.start, args.end, output, args.delay, args.stock)
-    except (ValueError, RuntimeError) as exc:
-        parser.error(str(exc))
-    if failures:
-        raise SystemExit(1)
+    parser = argparse.ArgumentParser(
+        description="TWSE 多股票歷史資料爬蟲"
+    )
 
+    parser.add_argument(
+        "--stocks-file",
+        type=Path,
+        default=None,
+        help="股票清單 JSON 檔案"
+    )
+
+    parser.add_argument(
+        "--stock",
+        default=DEFAULT_STOCK_ID,
+        help="單一股票代號，預設 2327"
+    )
+
+    parser.add_argument(
+        "--start",
+        type=parse_date,
+        default=date(2026, 9, 1)
+    )
+
+    parser.add_argument(
+        "--end",
+        type=parse_date,
+        default=date.today()
+    )
+
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None
+    )
+
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=2.0
+    )
+
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s | %(message)s"
+    )
+
+    try:
+        if args.stocks_file:
+            stock_ids = load_stocks(args.stocks_file)
+
+            if args.output:
+                parser.error(
+                    "批次模式請使用預設個別 CSV 輸出"
+                )
+        else:
+            stock_ids = [args.stock]
+
+        all_failures = []
+
+        for index, stock_id in enumerate(stock_ids, 1):
+            LOGGER.info(
+                "處理股票 %s (%d/%d)",
+                stock_id,
+                index,
+                len(stock_ids)
+            )
+
+            output = (
+                Path("data/raw") / f"{stock_id}.csv"
+                if args.stocks_file
+                else args.output or Path("data/raw") / f"{stock_id}.csv"
+            )
+
+            try:
+                _, failures = crawl(
+                    args.start,
+                    args.end,
+                    output,
+                    args.delay,
+                    stock_id
+                )
+
+                if failures:
+                    all_failures.append(stock_id)
+
+            except (
+                ValueError,
+                RuntimeError,
+                requests.RequestException
+            ) as exc:
+                LOGGER.error(
+                    "股票 %s 失敗：%s",
+                    stock_id,
+                    exc
+                )
+                all_failures.append(stock_id)
+
+            if index < len(stock_ids):
+                time.sleep(args.delay)
+
+        if all_failures:
+            LOGGER.error(
+                "以下股票未完整更新：%s",
+                ", ".join(all_failures)
+            )
+            raise SystemExit(1)
+
+        LOGGER.info("所有股票爬取完成")
+
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        parser.error(str(exc))
 
 if __name__ == "__main__":
     main()
