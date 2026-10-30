@@ -1,13 +1,14 @@
 """Streamlit stock dashboard for the Taiwan stock data in this repository."""
 
 from pathlib import Path
+import sqlite3
 
 import pandas as pd
 import streamlit as st
 
 from charts import candlestick_chart
 from comparison import render_comparison
-from data_processor import load_data
+from database import StockDatabase
 
 
 DATA_DIR = Path(__file__).parent
@@ -17,10 +18,11 @@ STOCK_FILES = {
 }
 
 
-@st.cache_data
 def read_stock_data(path: str) -> pd.DataFrame:
-    """Load and process a stock CSV for the dashboard."""
-    return load_data(path)
+    """Seed each stock once; subsequent reads preserve database updates."""
+    database = StockDatabase()
+    database.import_csv(path, only_if_empty=True)
+    return database.query_prices(Path(path).stem)
 
 
 def format_number(value: float | int | None, suffix: str = "") -> str:
@@ -52,7 +54,7 @@ def main() -> None:
     data_path = STOCK_FILES[stock_label]
     try:
         data = read_stock_data(str(data_path))
-    except (FileNotFoundError, ValueError, pd.errors.ParserError) as exc:
+    except (OSError, sqlite3.Error, ValueError, pd.errors.ParserError) as exc:
         st.error(f"無法載入 {stock_label} 的資料：{exc}")
         st.stop()
 

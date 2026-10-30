@@ -5,6 +5,8 @@ __pycache__/
 data/
 *.csv
 *.sqlite
+*.sqlite3
+*.sqlite3-journal
 .DS_Store
 # Runtime logs
 logs/
