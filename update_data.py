@@ -1,12 +1,8 @@
-"""Sprint 2: compare TWSE published daily rows with existing raw CSV files.
+"""Sprint 2: TWSE published rows -> SQLite (or staging CSV).
 
-This is a STAGING adapter, not the final SQLite writer. It never changes the
-existing CSV files or a production database. A DB teammate can consume the
-per-stock pending CSV files after agreeing on the DB schema.
-
-Examples:
-  python update_data.py --start 2026-09-01 --end 2026-09-30
-  python update_data.py --start 2026-10-01 --end 2026-10-28
+Use --write-db --db ABSOLUTE_OR_RELATIVE_PATH to explicitly enable database writes.
+Without --write-db, this tool retains the previous CSV staging behavior.
+Do not use a production database until the deployment owner confirms the path.
 """
 
 import argparse
@@ -20,7 +16,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import requests
+import pandas as pd
 
+from database import StockDatabase
 from crawler import FIELDS, fetch_month, month_starts, parse_date
 
 LOG = logging.getLogger("update_data")
@@ -54,6 +52,21 @@ def read_existing_dates(path, stock_id):
             if row["stock_id"] == stock_id:
                 existing.add(date.fromisoformat(row["date"]).isoformat())
         return existing
+
+
+def read_database_dates(db, stock_id, start, end):
+    """Read the REAL SQLite rows; CSV existence cannot prove DB completeness."""
+    frame = db.query_prices(stock_id, start=start, end=end, indicators=False)
+    if frame.empty:
+        return set()
+    return set(pd.to_datetime(frame["date"]).dt.strftime("%Y-%m-%d"))
+
+
+def latest_database_date(db, stock_id):
+    frame = db.query_prices(stock_id, indicators=False)
+    if frame.empty:
+        return None
+    return pd.to_datetime(frame["date"]).max().strftime("%Y-%m-%d")
 
 
 def write_csv_atomic(path, rows):
@@ -91,7 +104,8 @@ def fetch_with_retries(session, month, stock_id, attempts, retry_seconds):
             time.sleep(retry_seconds * attempt)
     return [], last_error, attempts
 
-def update_one(session, stock_id, start, end, raw_dir, pending_dir, attempts, retry_seconds, request_delay):
+
+def update_one(session, stock_id, start, end, raw_dir, pending_dir, attempts, retry_seconds, request_delay, db=None, write_db=False):
     began = datetime.now(TAIPEI)
     record = {
         "stock_id": stock_id,
@@ -104,10 +118,15 @@ def update_one(session, stock_id, start, end, raw_dir, pending_dir, attempts, re
         "retry_attempts_total": 0,
         "errors": [],
         "pending_file": None,
+        "written_rows": 0,
+        "latest_database_date": None,
     }
     try:
-        existing = read_existing_dates(raw_dir / f"{stock_id}.csv", stock_id)
+        existing = (read_database_dates(db, stock_id, start, end) if write_db
+                    else read_existing_dates(raw_dir / f"{stock_id}.csv", stock_id))
         record["latest_existing_date"] = max(existing, default=None)
+        if write_db:
+            record["latest_database_date"] = latest_database_date(db, stock_id)
         seen = {}
         month_list = list(month_starts(start, end))
         for idx, month in enumerate(month_list):
@@ -132,20 +151,30 @@ def update_one(session, stock_id, start, end, raw_dir, pending_dir, attempts, re
                 time.sleep(request_delay + random.uniform(0, 0.5))
         record["latest_source_date"] = max(seen, default=None)
         new_rows = [seen[d] for d in sorted(seen) if d not in existing]
-        # A new pending CSV is always emitted, even if empty; it never alters source CSVs.
-        pending = pending_dir / f"{stock_id}.csv"
-        write_csv_atomic(pending, new_rows)
-        record["pending_file"] = str(pending)
         record["new_rows"] = len(new_rows)
+        # Fail closed: a partial fetch or malformed row must never mark this stock
+        # successfully updated; the existing valid SQLite rows stay untouched.
         if record["errors"]:
             record["status"] = "partial_failure" if seen else "failed"
-        elif new_rows:
-            record["status"] = "pending_write"
-        elif seen:
-            record["status"] = "no_new_rows"
-        else:
+        elif not seen:
             record["status"] = "unverified_no_data"
-    except (OSError, ValueError, TypeError) as exc:
+        elif (end == datetime.now(TAIPEI).date()
+              and end.weekday() < 5 and record["latest_source_date"] < end.isoformat()):
+            # Source has not confirmed *today's* published result.
+            record["status"] = "not_published"
+        elif write_db:
+            if new_rows:
+                # Database teammate validates and atomically commits all rows.
+                # Never write the staging CSV as a substitute for real DB state.
+                record["written_rows"] = db.upsert_prices(pd.DataFrame(new_rows), source="twse-sprint2")
+            record["latest_database_date"] = latest_database_date(db, stock_id)
+            record["status"] = "updated" if new_rows else "no_new_rows"
+        else:
+            pending = pending_dir / f"{stock_id}.csv"
+            write_csv_atomic(pending, new_rows)
+            record["pending_file"] = str(pending)
+            record["status"] = "pending_write" if new_rows else "no_new_rows"
+    except (OSError, ValueError, TypeError, RuntimeError) as exc:
         record["errors"].append({"month": None, "reason": f"{type(exc).__name__}: {exc}"})
     finally:
         record["finished_at"] = datetime.now(TAIPEI).isoformat()
@@ -153,8 +182,10 @@ def update_one(session, stock_id, start, end, raw_dir, pending_dir, attempts, re
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="台股每日增量更新預備作業（不寫入正式 DB）")
+    parser = argparse.ArgumentParser(description="台股增量更新（預設暫存 CSV；可明確開啟 SQLite 寫入）")
     parser.add_argument("--stocks-file", type=Path, default=Path("stocks.json"))
+    parser.add_argument("--write-db", action="store_true", help="明確啟用 SQLite 寫入")
+    parser.add_argument("--db", type=Path, default=None, help="SQLite 位置，測試時請指定獨立路徑")
     parser.add_argument("--start", type=parse_date, default=None)
     parser.add_argument("--end", type=parse_date, default=None)
     parser.add_argument("--lookback-days", type=int, default=40)
@@ -178,15 +209,18 @@ def main(argv=None):
         stocks = load_stock_ids(args.stocks_file)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
+    if args.write_db and args.db is None:
+        parser.error("--write-db 必須搭配 --db 明確指定資料庫（避免誤寫正式庫）")
+    db = StockDatabase(args.db) if args.write_db else None
     reports = []
     # Plain session: exactly `attempts` outer calls, avoiding nested automatic retries.
     with requests.Session() as session:
         session.headers.update({"User-Agent": "Mozilla/5.0 (AcademicStockResearch/2.0)", "Accept": "application/json"})
         for idx, stock_id in enumerate(stocks):
             LOG.info("[%s/%s] 檢查股票 %s", idx + 1, len(stocks), stock_id)
-            record = update_one(session, stock_id, start, end, args.raw_dir, args.pending_dir, args.attempts, args.retry_seconds, args.delay)
+            record = update_one(session, stock_id, start, end, args.raw_dir, args.pending_dir, args.attempts, args.retry_seconds, args.delay, db=db, write_db=args.write_db)
             reports.append(record)
-            LOG.info("%s：%s，新資料 %d 筆，來源最新日期 %s", stock_id, record["status"], record["new_rows"], record["latest_source_date"])
+            LOG.info("%s：%s，待新增 %d 筆，實際寫入 %d 筆，來源最新日期 %s", stock_id, record["status"], record["new_rows"], record["written_rows"], record["latest_source_date"])
             if idx + 1 < len(stocks):
                 time.sleep(args.delay)
     args.log_dir.mkdir(parents=True, exist_ok=True)
@@ -194,7 +228,7 @@ def main(argv=None):
     report_file = args.log_dir / f"update_{run_at}.json"
     report_file.write_text(json.dumps({"timezone": "Asia/Taipei", "start": start.isoformat(), "end": end.isoformat(), "stocks": reports}, ensure_ascii=False, indent=2), encoding="utf-8")
     LOG.info("執行紀錄：%s", report_file)
-    if any(r["status"] in ("failed", "partial_failure", "unverified_no_data") for r in reports):
+    if any(r["status"] in ("failed", "partial_failure", "unverified_no_data", "not_published") for r in reports):
         return 1
     return 0
 
