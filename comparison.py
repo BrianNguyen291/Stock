@@ -9,6 +9,7 @@
 import argparse
 import logging
 import math
+import sqlite3
 from datetime import date
 from pathlib import Path
 from typing import Callable
@@ -152,7 +153,7 @@ def render_comparison(
     for label in selected:
         try:
             stocks[label] = loader(str(stock_files[label]))
-        except (FileNotFoundError, ValueError, pd.errors.ParserError) as exc:
+        except (OSError, sqlite3.Error, ValueError, pd.errors.ParserError) as exc:
             st.error(f"無法載入 {label} 的資料：{exc}")
             return
 

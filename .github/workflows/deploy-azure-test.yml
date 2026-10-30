@@ -37,7 +37,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force dist\runtime | Out-Null
-          Copy-Item app.py, charts.py, comparison.py, data_processor.py, serve.py, web.config dist\
+          Copy-Item app.py, charts.py, comparison.py, data_processor.py, database.py, serve.py, web.config dist\
           Copy-Item *.csv dist\
           python -m pip install --target dist\site-packages -r requirements.txt
           if ($LASTEXITCODE -ne 0) { throw 'Dependency packaging failed' }

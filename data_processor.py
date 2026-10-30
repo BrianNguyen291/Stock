@@ -23,6 +23,8 @@ NUMERIC_COLUMNS = (
     "transaction_count",
 )
 REQUIRED_COLUMNS = ("date", "close")
+
+
 def clean_data(data: pd.DataFrame) -> pd.DataFrame:
     """整理欄位、日期及數值格式，移除無法用於分析的資料列。"""
     if not isinstance(data, pd.DataFrame):
@@ -44,23 +46,35 @@ def clean_data(data: pd.DataFrame) -> pd.DataFrame:
         frame[column] = pd.to_numeric(values, errors="coerce")
 
     frame = frame.dropna(subset=list(REQUIRED_COLUMNS))
-    frame = frame.sort_values("date", kind="stable")
+    keys = ["stock_id", "date"] if "stock_id" in frame.columns else ["date"]
+    frame = frame.sort_values(keys, kind="stable")
     # 同一交易日若重複，保留檔案中最後一筆，避免重複計算日指標。
-    frame = frame.drop_duplicates(subset="date", keep="last").reset_index(drop=True)
+    frame = frame.drop_duplicates(subset=keys, keep="last").reset_index(drop=True)
     return frame
 
 
 def calculate_indicators(data: pd.DataFrame) -> pd.DataFrame:
-    """以收盤價及成交股數計算每日變化與五日均量。"""
+    """依股票計算完整交易日視窗的均線；資料不足時保留缺值。"""
     frame = data.copy()
     if "close" not in frame.columns:
         raise ValueError("缺少必要欄位：close")
+    if "date" in frame.columns:
+        keys = ["stock_id", "date"] if "stock_id" in frame.columns else ["date"]
+        frame = frame.sort_values(keys, kind="stable").reset_index(drop=True)
+    if "stock_id" in frame.columns and not frame.empty:
+        return pd.concat(
+            [calculate_indicators(group.drop(columns="stock_id")).assign(stock_id=stock_id)
+             for stock_id, group in frame.groupby("stock_id", sort=False)],
+            ignore_index=True,
+        )
 
     close = pd.to_numeric(frame["close"], errors="coerce")
     previous_close = close.shift(1)
     frame["previous_close"] = previous_close
     frame["price_change"] = close - previous_close
     frame["change_percent"] = (frame["price_change"] / previous_close.where(previous_close.ne(0))) * 100
+    for window in (5, 20, 60):
+        frame[f"ma_{window}"] = close.rolling(window=window, min_periods=window).mean()
 
     if "trade_volume" in frame.columns:
         volume = pd.to_numeric(frame["trade_volume"], errors="coerce")
@@ -69,7 +83,8 @@ def calculate_indicators(data: pd.DataFrame) -> pd.DataFrame:
         frame["volume_change_percent"] = (
             frame["volume_change"] / previous_volume.where(previous_volume.ne(0))
         ) * 100
-        frame["volume_ma_5"] = volume.rolling(window=5, min_periods=1).mean()
+        for window in (5, 20):
+            frame[f"volume_ma_{window}"] = volume.rolling(window=window, min_periods=window).mean()
 
     return frame
 
