@@ -61,6 +61,8 @@ Azure 實測可在 GitHub Actions 的「Deploy Stock to Azure test slot」選擇
 
 驗收成功後自動清除該次測試股票及更新紀錄；失敗則保留供追查。驗收證據保存在該次 Actions 的 `sqlite-persistence-<run_id>` artifact。預設 push 部署不執行這項驗收。沒有成功的實際執行紀錄前，本機模擬不代表 Azure 驗收完成。
 
+Windows 管理程序可能沒有 `WEBSITE_SLOT_NAME`。驗收流程會以 Azure 的 test slot 資源選擇管理端點，明確將該 slot 的 `STOCK_DB_PATH` 設為 `%HOME%/data/stock/test.sqlite3` 的絕對路徑，並標記為 slot setting；若舊的預設資料庫已有歷史資料，先以 SQLite backup 複製到新的測試路徑，保留原檔。若新舊資料庫同時存在則停止，避免覆蓋資料。
+
 若需手動核對：
 
 1. 在 test slot 確認實際資料庫路徑位於 `%HOME%/data/stock/`，載入兩支股票，記下筆數、日期範圍及一筆歷史 OHLC／成交量。

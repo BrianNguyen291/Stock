@@ -35,7 +35,10 @@ def probe(slot, mode):
                  "marker_id": MARKER_ID, "marker_note": MARKER_NOTE}
     output = io.StringIO()
     with redirect_stdout(output):
-        exec(REMOTE, namespace)
+        try:
+            exec(REMOTE, namespace)
+        except SystemExit as exc:
+            assert exc.code == 0
     return json.loads(output.getvalue())
 
 
@@ -75,3 +78,15 @@ def test_missing_or_changed_marker_fails_verification(deployed_home):
         connection.execute("UPDATE daily_prices SET note='changed' WHERE stock_id=?", (MARKER_ID,))
     with pytest.raises(AssertionError, match="Marker missing or changed"):
         probe("test", "inspect")
+
+
+def test_configure_migrates_history_when_windows_omits_slot_name(deployed_home, monkeypatch):
+    monkeypatch.delenv("WEBSITE_SLOT_NAME")
+    original = StockDatabase()
+    original.import_csv(ROOT / "2327.csv")
+    configuration = probe("test", "configure")
+    assert configuration["migrated"]
+    assert Path(configuration["target_path"]).name == "test.sqlite3"
+    migrated = StockDatabase(configuration["target_path"])
+    assert len(migrated.query_prices("2327")) == 193
+    assert len(original.query_prices("2327")) == 193

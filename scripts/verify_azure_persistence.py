@@ -26,8 +26,12 @@ from pathlib import Path
 
 home = Path(os.environ["HOME"]).resolve()
 root = Path.cwd().resolve()
-slot_name = os.environ.get("WEBSITE_SLOT_NAME", "production").lower()
-assert slot_name == expected_slot, "Unexpected slot: " + slot_name
+environment_slot = os.environ.get("WEBSITE_SLOT_NAME")
+if environment_slot:
+    assert environment_slot.lower() == expected_slot, "Unexpected slot: " + environment_slot
+# The authenticated SCM endpoint was selected from the ARM slot resource.
+# Windows SCM processes do not always expose WEBSITE_SLOT_NAME.
+slot_name = expected_slot
 configured = os.environ.get("STOCK_DB_PATH")
 path = Path(configured) if configured else home / "data" / "stock" / (slot_name + ".sqlite3")
 assert path.is_absolute(), "Database path must be absolute"
@@ -37,6 +41,23 @@ assert path.is_relative_to(home) and not path.is_relative_to(root), "Database mu
 if expected_slot == "test":
     from database import StockDatabase, get_database_path
     import pandas as pd
+    if mode == "configure":
+        target = home / "data" / "stock" / "test.sqlite3"
+        previous = get_database_path().resolve()
+        migrated = False
+        if previous != target and previous.is_file():
+            assert not target.exists(), "Both old and new databases exist; refusing to overwrite either"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source = sqlite3.connect(previous.as_uri() + "?mode=ro", uri=True)
+            destination = sqlite3.connect(target)
+            try:
+                source.backup(destination)
+                migrated = True
+            finally:
+                destination.close()
+                source.close()
+        print(json.dumps({"target_path": str(target), "previous_path": str(previous), "migrated": migrated}))
+        raise SystemExit(0)
     assert get_database_path().resolve() == path
     if mode == "prepare":
         database = StockDatabase()
@@ -177,6 +198,13 @@ def main():
         # Persist marker identity before remote writes for traceability on failure.
         baseline_path.write_text(json.dumps(baseline, indent=2), encoding="utf-8")
         baseline["production"] = client.probe("production", "inspect", baseline)
+        baseline_path.write_text(json.dumps(baseline, indent=2), encoding="utf-8")
+        configuration = client.probe("test", "configure", baseline)
+        baseline["configuration"] = configuration
+        baseline_path.write_text(json.dumps(baseline, indent=2), encoding="utf-8")
+        azure("webapp", "config", "appsettings", "set", *client.target("test"),
+              "--slot-settings", "STOCK_DB_PATH=" + configuration["target_path"])
+        client.wait_healthy()
         baseline["test"] = client.probe("test", "prepare", baseline)
         if baseline["production"]["path"].lower() == baseline["test"]["path"].lower():
             raise RuntimeError("Production and test paths must differ")
