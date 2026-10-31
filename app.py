@@ -1,6 +1,7 @@
 """Streamlit stock dashboard for the Taiwan stock data in this repository."""
 
 from pathlib import Path
+import re
 import sqlite3
 
 import pandas as pd
@@ -12,10 +13,25 @@ from database import StockDatabase
 
 
 DATA_DIR = Path(__file__).parent
-STOCK_FILES = {
-    "2327 國巨": DATA_DIR / "2327.csv",
-    "2492 華新科": DATA_DIR / "2492.csv",
-}
+STOCK_FILE_PATTERN = re.compile(r"\d{4,6}")
+
+
+def discover_stock_files(data_dir: Path = DATA_DIR) -> dict[str, Path]:
+    """Find <股票代號>.csv files; the label uses stock_name from the first row."""
+    files = {}
+    for path in sorted(data_dir.glob("*.csv")):
+        if not STOCK_FILE_PATTERN.fullmatch(path.stem):
+            continue
+        try:
+            first = pd.read_csv(path, encoding="utf-8-sig", dtype=str, nrows=1, keep_default_na=False)
+            name = str(first["stock_name"].iloc[0]).strip()
+        except (OSError, KeyError, IndexError, ValueError, pd.errors.ParserError):
+            name = ""
+        files[f"{path.stem} {name}".strip()] = path
+    return files
+
+
+STOCK_FILES = discover_stock_files()
 
 
 def read_stock_data(path: str) -> pd.DataFrame:
