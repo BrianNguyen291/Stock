@@ -5,6 +5,10 @@ on:
     branches: [dev]
   workflow_dispatch:
     inputs:
+      diagnostics_only:
+        description: 'Read Azure test-slot deployment diagnostics without deploying'
+        type: boolean
+        default: false
       verify_persistence:
         description: 'Verify test-slot SQLite persistence across restart and redeploy'
         type: boolean
@@ -18,7 +22,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  diagnose:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnostics_only }}
+    runs-on: ubuntu-latest
+    env:
+      AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+    steps:
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Inspect test-slot deployment history
+        run: az webapp log deployment list --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_WEBAPP_NAME" --slot test --output json
+      - name: Inspect latest test-slot deployment logs
+        run: az webapp log deployment show --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_WEBAPP_NAME" --slot test --output json
   deploy:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.diagnostics_only) }}
     runs-on: windows-latest
     env:
       AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
