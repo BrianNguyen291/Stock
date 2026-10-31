@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import sys
 
 import pandas as pd
 
@@ -209,6 +210,8 @@ class StockDatabase:
 
 
 def main():
+    # Windows 的管線預設可能使用 cp1252，無法輸出中文狀態及路徑。
+    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="匯入股票 CSV 到 SQLite")
     parser.add_argument("--db", type=Path, help="覆寫資料庫路徑")
     parser.add_argument("--import-csv", type=Path, nargs="+", required=True)
