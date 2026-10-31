@@ -24,8 +24,8 @@ REMOTE = r'''
 import hashlib, json, os, sqlite3
 from pathlib import Path
 
-home = Path(os.environ["HOME"]).resolve()
-root = Path.cwd().resolve()
+home = Path(os.path.abspath(os.environ["HOME"]))
+root = Path.cwd()
 environment_slot = os.environ.get("WEBSITE_SLOT_NAME")
 if environment_slot:
     assert environment_slot.lower() == expected_slot, "Unexpected slot: " + environment_slot
@@ -35,15 +35,18 @@ slot_name = expected_slot
 configured = os.environ.get("STOCK_DB_PATH")
 path = Path(configured) if configured else home / "data" / "stock" / (slot_name + ".sqlite3")
 assert path.is_absolute(), "Database path must be absolute"
-path = path.resolve()
-assert path.is_relative_to(home) and not path.is_relative_to(root), "Database must be on HOME storage outside wwwroot"
+physical = path.resolve()
+assert physical.is_relative_to(home.resolve()) and not physical.is_relative_to(root.resolve()), "Database must be on HOME storage outside wwwroot"
+# Keep the stable HOME drive alias instead of storing a resolved Azure UNC/IP.
+# SQLite read-only file URIs also require a local (empty-authority) path.
+path = home / physical.relative_to(home.resolve())
 
 if expected_slot == "test":
     from database import StockDatabase, get_database_path
     import pandas as pd
     if mode == "configure":
         target = home / "data" / "stock" / "test.sqlite3"
-        previous = get_database_path().resolve()
+        previous = home / get_database_path().resolve().relative_to(home.resolve())
         migrated = False
         if previous != target and previous.is_file():
             assert not target.exists(), "Both old and new databases exist; refusing to overwrite either"
@@ -58,7 +61,7 @@ if expected_slot == "test":
                 source.close()
         print(json.dumps({"target_path": str(target), "previous_path": str(previous), "migrated": migrated}))
         raise SystemExit(0)
-    assert get_database_path().resolve() == path
+    assert get_database_path().resolve() == path.resolve()
     if mode == "prepare":
         database = StockDatabase()
         for filename in ("2327.csv", "2492.csv"):
@@ -102,10 +105,21 @@ if mode == "cleanup":
     assert expected_slot == "test"
     database = StockDatabase()
     with database.connect() as connection:
-        connection.execute("DELETE FROM daily_prices WHERE stock_id=? AND note=?", (marker_id, marker_note))
-        connection.execute("DELETE FROM stocks WHERE stock_id=? AND NOT EXISTS (SELECT 1 FROM daily_prices WHERE stock_id=?)", (marker_id, marker_id))
-        connection.execute("DELETE FROM update_logs WHERE source=?", (marker_note,))
+        # Also clean this tool's identical markers left by an interrupted run.
+        # Match the full test signature; never remove ordinary stock records.
+        markers = connection.execute("""
+            SELECT p.stock_id, p.note FROM daily_prices p JOIN stocks s USING(stock_id)
+            WHERE s.stock_name='Persistence acceptance marker' AND p.stock_id LIKE 'Z%'
+            AND p.date='1900-01-01' AND p.open=12 AND p.high=15 AND p.low=10
+            AND p.close=13 AND p.trade_volume=1234567 AND p.note LIKE 'issue-9-acceptance:%'
+            AND (SELECT COUNT(*) FROM daily_prices d WHERE d.stock_id=p.stock_id)=1
+        """).fetchall()
+        for identifier, note in markers:
+            connection.execute("DELETE FROM daily_prices WHERE stock_id=? AND note=?", (identifier, note))
+            connection.execute("DELETE FROM stocks WHERE stock_id=? AND NOT EXISTS (SELECT 1 FROM daily_prices WHERE stock_id=?)", (identifier, identifier))
+            connection.execute("DELETE FROM update_logs WHERE source=?", (note,))
     result["marker_cleaned"] = True
+    result["cleaned_marker_ids"] = [row[0] for row in markers]
 
 print(json.dumps(result, ensure_ascii=True))
 '''

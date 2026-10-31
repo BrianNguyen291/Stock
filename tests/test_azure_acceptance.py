@@ -90,3 +90,15 @@ def test_configure_migrates_history_when_windows_omits_slot_name(deployed_home, 
     migrated = StockDatabase(configuration["target_path"])
     assert len(migrated.query_prices("2327")) == 193
     assert len(original.query_prices("2327")) == 193
+
+
+def test_keeps_stable_home_alias_instead_of_resolved_storage_path(deployed_home, monkeypatch):
+    alias = deployed_home.parent / (deployed_home.name + "-alias")
+    try:
+        alias.symlink_to(deployed_home, target_is_directory=True)
+    except OSError:
+        pytest.skip("This Windows runner does not allow directory symlinks")
+    monkeypatch.setenv("HOME", str(alias))
+    result = probe("test", "prepare")
+    assert Path(result["path"]).is_relative_to(alias)
+    assert probe("test", "inspect") == result
