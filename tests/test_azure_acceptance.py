@@ -5,11 +5,12 @@ import io
 import json
 from pathlib import Path
 import shutil
+import urllib.error
 
 import pytest
 
 from database import StockDatabase
-from scripts.verify_azure_persistence import REMOTE
+from scripts.verify_azure_persistence import REMOTE, command_result
 
 ROOT = Path(__file__).resolve().parent.parent
 MARKER_ID = "Z123456789"
@@ -102,3 +103,31 @@ def test_keeps_stable_home_alias_instead_of_resolved_storage_path(deployed_home,
     result = probe("test", "prepare")
     assert Path(result["path"]).is_relative_to(alias)
     assert probe("test", "inspect") == result
+
+
+def test_prepare_can_be_retried_without_duplicate_marker_or_logs(deployed_home):
+    first = probe("test", "prepare")
+    assert probe("test", "prepare") == first
+    with StockDatabase().connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM update_logs WHERE source=?", (MARKER_NOTE,)).fetchone()[0] == 1
+
+
+def test_read_probe_waits_for_scm_after_restart(monkeypatch):
+    attempts = []
+    waits = []
+
+    def request(_request, timeout):
+        attempts.append(timeout)
+        if len(attempts) == 1:
+            raise urllib.error.HTTPError("https://example.invalid", 503, "warming up", {}, None)
+        return io.StringIO('{"ExitCode": 0, "Output": "ok"}')
+
+    monkeypatch.setattr("scripts.verify_azure_persistence.urllib.request.urlopen", request)
+    monkeypatch.setattr("scripts.verify_azure_persistence.time.sleep", waits.append)
+    assert command_result(None, retry_safe=True)["Output"] == "ok"
+    assert waits == [5]
+    assert len(attempts) == 2
+    attempts.clear()
+    with pytest.raises(urllib.error.HTTPError):
+        command_result(None, retry_safe=False)
+    assert len(attempts) == 1

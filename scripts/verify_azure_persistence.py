@@ -67,12 +67,14 @@ if expected_slot == "test":
         for filename in ("2327.csv", "2492.csv"):
             database.import_csv(root / filename, only_if_empty=True)
         existing = database.query_prices(marker_id, indicators=False)
-        assert existing.empty, "Acceptance marker already exists"
-        database.upsert_prices(pd.DataFrame([{
-            "stock_id": marker_id, "stock_name": "Persistence acceptance marker",
-            "date": "1900-01-01", "open": 12, "high": 15, "low": 10,
-            "close": 13, "trade_volume": 1234567, "note": marker_note,
-        }]), source=marker_note)
+        if existing.empty:
+            database.upsert_prices(pd.DataFrame([{
+                "stock_id": marker_id, "stock_name": "Persistence acceptance marker",
+                "date": "1900-01-01", "open": 12, "high": 15, "low": 10,
+                "close": 13, "trade_volume": 1234567, "note": marker_note,
+            }]), source=marker_note)
+        # A retried preparation must reuse its exact marker, never write twice.
+        # The complete marker signature is checked below before returning.
 
 result = {"slot": slot_name, "path": str(path), "home": str(home),
           "deployment_root": str(root), "configured_path": configured,
@@ -173,9 +175,7 @@ class AzureAcceptance:
         request = urllib.request.Request(endpoint, data=body, headers={
             "Authorization": authorization, "Content-Type": "application/json",
         })
-        # No automatic POST retry: preparation writes a unique marker once.
-        with urllib.request.urlopen(request, timeout=180) as response:
-            result = json.load(response)
+        result = command_result(request, retry_safe=mode in ("inspect", "prepare"))
         if result["ExitCode"] != 0:
             raise RuntimeError(f"{slot} {mode} failed: " + result.get("Error", ""))
         return json.loads(result["Output"].strip())
@@ -192,6 +192,18 @@ class AzureAcceptance:
                 pass
             time.sleep(5)
         raise RuntimeError("Test slot did not become healthy")
+
+
+def command_result(request, *, retry_safe):
+    """SCM warms up separately from the app after restart; retry safe probes."""
+    for attempt in range(24):
+        try:
+            with urllib.request.urlopen(request, timeout=180) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            if not retry_safe or exc.code not in (502, 503, 504) or attempt == 23:
+                raise
+            time.sleep(5)
 
 
 def main():
