@@ -57,7 +57,11 @@ python -m pytest tests -q
 
 測試使用暫存資料庫，涵蓋兩份 CSV 全列比對、重複匯入、不同股票同日資料、含起訖日查詢、可手算指標、前期視窗、無效資料拒絕及寫入失敗回滾，並以新 Python 行程與替換部署目錄模擬資料保留。
 
-Azure 實測尚待部署環境執行，本機模擬不代表 Azure 驗收完成：
+Azure 實測可在 GitHub Actions 的「Deploy Stock to Azure test slot」選擇 Run workflow、分支 `dev`，並勾選 `verify_persistence` 執行。流程會使用既有 Azure 登入，透過 [Kudu command API](https://github.com/projectkudu/kudu/wiki/REST-API#command) 在 test slot 寫入獨立的隨機測試股票資料，保存所有歷史價格與股票名稱的 SHA-256，重啟後比對、重新部署後再比對，並確認正式資料庫沒有測試紀錄。正式環境僅讀取，不建立資料庫或寫入資料。
+
+驗收成功後自動清除該次測試股票及更新紀錄；失敗則保留供追查。驗收證據保存在該次 Actions 的 `sqlite-persistence-<run_id>` artifact。預設 push 部署不執行這項驗收。沒有成功的實際執行紀錄前，本機模擬不代表 Azure 驗收完成。
+
+若需手動核對：
 
 1. 在 test slot 確認實際資料庫路徑位於 `%HOME%/data/stock/`，載入兩支股票，記下筆數、日期範圍及一筆歷史 OHLC／成交量。
 2. 透過 `upsert_prices` 在測試庫加入一筆 CSV 沒有的測試紀錄，記下內容，確保後續驗證不會被自動匯入掩蓋。

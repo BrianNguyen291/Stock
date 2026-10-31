@@ -4,6 +4,11 @@ on:
   push:
     branches: [dev]
   workflow_dispatch:
+    inputs:
+      verify_persistence:
+        description: 'Verify test-slot SQLite persistence across restart and redeploy'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -73,9 +78,29 @@ jobs:
           az webapp config set --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot test --web-sockets-enabled true --output none
           if ($LASTEXITCODE -ne 0) { throw 'Failed to enable Web sockets on test slot' }
 
+      - name: Record database baseline and add isolated test marker
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_persistence }}
+        run: python scripts/verify_azure_persistence.py --phase prepare
+
+      - name: Restart test slot and verify historical data
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_persistence }}
+        run: python scripts/verify_azure_persistence.py --phase restart
+
       - name: Deploy to Azure Web App test slot
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           slot-name: test
           package: dist
+
+      - name: Verify data after redeploy and clean up test marker
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_persistence }}
+        run: python scripts/verify_azure_persistence.py --phase redeploy
+
+      - name: Save persistence acceptance evidence
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.verify_persistence }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqlite-persistence-${{ github.run_id }}
+          path: persistence-evidence/
+          if-no-files-found: warn
