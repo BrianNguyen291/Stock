@@ -79,6 +79,9 @@ jobs:
           & .\dist\runtime\python.exe -c 'import streamlit, matplotlib, app, serve'
           if ($LASTEXITCODE -ne 0) { throw 'Packaged Python runtime could not import the app' }
 
+          python -c "import shutil; shutil.make_archive('stock-test', 'zip', 'dist')"
+          if ($LASTEXITCODE -ne 0) { throw 'Deployment ZIP packaging failed' }
+
       - name: Sign in to Azure
         uses: azure/login@v2
         with:
@@ -107,11 +110,17 @@ jobs:
         run: python scripts/verify_azure_persistence.py --phase restart
 
       - name: Deploy to Azure Web App test slot
-        uses: azure/webapps-deploy@v3
-        with:
-          app-name: ${{ env.AZURE_WEBAPP_NAME }}
-          slot-name: test
-          package: dist
+        shell: pwsh
+        run: |
+          az webapp deployment source config-zip --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot test --src stock-test.zip --timeout 1800 --only-show-errors --output none
+          if ($LASTEXITCODE -ne 0) { throw 'Direct ZIP deployment to test slot failed; inspect the Azure deployment logs' }
+
+      - name: Read Azure logs if deployment fails
+        if: ${{ failure() }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          az webapp log deployment show --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot test --output json
 
       - name: Verify data after redeploy and clean up test marker
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_persistence }}
