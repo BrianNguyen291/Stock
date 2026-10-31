@@ -3,7 +3,9 @@
 儀表板由 app.py 呼叫 ``render_comparison``，也可直接執行：
     python comparison.py --input 2327.csv 2492.csv --start 2026-01-01 --end 2026-10-21
 
-注意：報酬率皆以未還原權值的收盤價計算，除權息日的價格落差會反映在漲跌幅中。
+所有指標都只用「所選股票皆有交易」的共同交易日計算，確保各股比較基準一致。
+注意：報酬率皆以未還原權值的收盤價計算，未含股利，不等於總報酬；
+除權息日的價格落差會反映在漲跌幅中。
 """
 
 import argparse
@@ -21,6 +23,11 @@ from data_processor import load_data
 LOGGER = logging.getLogger(__name__)
 
 TRADING_DAYS_PER_YEAR = 252
+MIN_STOCKS = 2
+MAX_STOCKS = 5
+# 樣本標準差（ddof=1）至少需要兩筆日報酬，也就是三個共同交易日。
+MIN_RETURNS_FOR_VOLATILITY = 2
+PRICE_BASIS_NOTE = "以未還原權值的收盤價計算，未含股利，不等於總報酬。"
 # 排行榜可選指標：指標名稱 -> 是否由小到大排序（數值越小排名越前）
 RANKING_METRICS = {
     "區間報酬率(%)": False,
@@ -75,6 +82,14 @@ def winning_days(returns: pd.DataFrame) -> pd.Series:
     return returns.idxmax(axis=1).value_counts().reindex(returns.columns, fill_value=0)
 
 
+def annualized_volatility(returns: pd.Series) -> float:
+    """日報酬（%）的樣本標準差 × √252；日報酬不足兩筆時回傳 NaN，不輸出誤導數值。"""
+    returns = returns.dropna()
+    if len(returns) < MIN_RETURNS_FOR_VOLATILITY:
+        return math.nan
+    return float(returns.std(ddof=1)) * math.sqrt(TRADING_DAYS_PER_YEAR)
+
+
 def period_performance(data: pd.DataFrame) -> dict:
     """計算單一股票在資料區間內的績效指標。"""
     frame = data.dropna(subset=["close"])
@@ -101,18 +116,51 @@ def period_performance(data: pd.DataFrame) -> dict:
         "最大單日漲幅(%)": returns.max(),
         "最大單日跌幅(%)": returns.min(),
         "上漲天數比例(%)": (returns > 0).mean() * 100,
-        "年化波動度(%)": returns.std() * math.sqrt(TRADING_DAYS_PER_YEAR),
+        "年化波動度(%)": annualized_volatility(returns),
         "最大回撤(%)": drawdown.min(),
         "平均成交量(股)": float(volume.mean()) if not volume.empty else math.nan,
     }
 
 
+def common_period(stocks: dict[str, pd.DataFrame], start=None, end=None) -> dict[str, pd.DataFrame]:
+    """裁切至 start～end，並只保留所有股票都有收盤價的共同交易日。"""
+    filtered = {label: filter_period(data, start, end) for label, data in stocks.items()}
+    common_dates = align_close_prices(filtered).index
+    return {
+        label: data[data["date"].isin(common_dates)].reset_index(drop=True)
+        for label, data in filtered.items()
+    }
+
+
 def performance_table(stocks: dict[str, pd.DataFrame], start=None, end=None) -> pd.DataFrame:
-    """彙整多檔股票的期間績效，每列一檔股票。"""
-    rows = {label: period_performance(filter_period(data, start, end)) for label, data in stocks.items()}
+    """彙整多檔股票在共同交易日上的期間績效，每列一檔股票。"""
+    rows = {label: period_performance(data) for label, data in common_period(stocks, start, end).items()}
     table = pd.DataFrame.from_dict(rows, orient="index")
     table.index.name = "股票"
     return table
+
+
+def risk_return_points(table: pd.DataFrame) -> pd.DataFrame:
+    """風險報酬散點圖的資料點，直接取自績效表；缺少年化波動度的股票不列入。"""
+    return table[["年化波動度(%)", "區間報酬率(%)"]].dropna().reset_index()
+
+
+def risk_return_chart(points: pd.DataFrame):
+    """X 軸年化波動度、Y 軸區間報酬率，每點標註股票代號與名稱。"""
+    import altair as alt
+
+    base = alt.Chart(points).encode(
+        x=alt.X("年化波動度(%):Q", title="年化波動度（%）", scale=alt.Scale(zero=True)),
+        y=alt.Y("區間報酬率(%):Q", title="區間報酬率（%）"),
+        tooltip=[
+            alt.Tooltip("股票:N"),
+            alt.Tooltip("年化波動度(%):Q", format=".2f"),
+            alt.Tooltip("區間報酬率(%):Q", format=".2f"),
+        ],
+    )
+    dots = base.mark_circle(size=120).encode(color=alt.Color("股票:N", legend=None))
+    labels = base.mark_text(align="left", dx=8, dy=-8).encode(text="股票:N")
+    return dots + labels
 
 
 def rank_stocks(table: pd.DataFrame, metric: str = DEFAULT_RANKING_METRIC) -> pd.DataFrame:
@@ -144,9 +192,20 @@ def render_comparison(
     st.subheader("股票比較與進階分析")
     labels = list(stock_files)
     with st.sidebar:
-        selected = st.multiselect("選擇比較股票", labels, default=labels[:2])
-    if len(selected) < 2:
-        st.info("請至少選擇兩檔股票進行比較。")
+        selected = st.multiselect(
+            "選擇比較股票",
+            labels,
+            default=labels[:MIN_STOCKS],
+            max_selections=MAX_STOCKS,
+            help=f"可同時比較 {MIN_STOCKS}～{MAX_STOCKS} 檔股票。",
+        )
+        if len(selected) >= MAX_STOCKS:
+            st.caption(f"已達上限 {MAX_STOCKS} 檔，如需更換請先移除一檔。")
+    if len(selected) < MIN_STOCKS:
+        st.info(f"請至少選擇 {MIN_STOCKS} 檔股票進行比較（最多 {MAX_STOCKS} 檔）。")
+        return
+    if len(selected) > MAX_STOCKS:
+        st.warning(f"最多只能同時比較 {MAX_STOCKS} 檔股票，請移除 {len(selected) - MAX_STOCKS} 檔。")
         return
 
     stocks = {}
@@ -184,6 +243,16 @@ def render_comparison(
         return
     period_start, period_end = closes.index[0], closes.index[-1]
     table = performance_table(stocks, period_start, period_end)
+    st.caption(
+        f"實際比較區間：{period_start:%Y-%m-%d} ～ {period_end:%Y-%m-%d}，"
+        f"共 {len(closes)} 個共同交易日。{PRICE_BASIS_NOTE}"
+    )
+    has_volatility = len(closes) - 1 >= MIN_RETURNS_FOR_VOLATILITY
+    if not has_volatility:
+        st.warning(
+            f"共同交易日只有 {len(closes)} 天（少於 {MIN_RETURNS_FOR_VOLATILITY} 筆日報酬），"
+            "資料不足，無法計算年化波動度。"
+        )
 
     metric_columns = st.columns(len(selected))
     for column, label in zip(metric_columns, selected):
@@ -221,9 +290,19 @@ def render_comparison(
         st.dataframe(wins)
 
     st.subheader("期間績效分析")
-    st.caption(f"{period_start:%Y-%m-%d} ～ {period_end:%Y-%m-%d}，以未還原權值的收盤價計算。")
+    st.caption(
+        f"{period_start:%Y-%m-%d} ～ {period_end:%Y-%m-%d}，共 {len(closes)} 個共同交易日；"
+        f"年化波動度 = 日報酬樣本標準差 × √{TRADING_DAYS_PER_YEAR}。{PRICE_BASIS_NOTE}"
+    )
     display = table.T.map(_format_cell)
     st.dataframe(display)
+
+    st.subheader("風險報酬散點圖")
+    if has_volatility:
+        st.caption("越靠左上代表承擔較低波動、取得較高報酬；數值與上方績效表相同。")
+        st.altair_chart(risk_return_chart(risk_return_points(table)))
+    else:
+        st.info("資料不足，無法繪製風險報酬散點圖，請選擇較長的比較區間。")
 
     st.subheader("排行榜")
     metric = st.selectbox("排名依據", list(RANKING_METRICS), key="ranking_metric")
@@ -231,13 +310,19 @@ def render_comparison(
     ranking_columns = ["排名", "股票", metric] + [
         name for name in ("區間報酬率(%)", "年化波動度(%)", "最大回撤(%)") if name != metric
     ]
-    st.dataframe(ranked[ranking_columns].round(2), hide_index=True)
+    # 以 column_config 固定顯示兩位小數（round 會把 33.40 顯示成 33.4），且保留數值排序。
+    two_decimals = st.column_config.NumberColumn(format="%.2f")
+    st.dataframe(
+        ranked[ranking_columns],
+        hide_index=True,
+        column_config={name: two_decimals for name in ranking_columns[2:]},
+    )
 
     st.markdown(f"**{period_end:%Y-%m-%d} 當日漲跌幅排行**")
-    latest = returns.iloc[-1].sort_values(ascending=False).rename("漲跌幅(%)").round(2)
+    latest = returns.iloc[-1].sort_values(ascending=False).rename("漲跌幅(%)")
     latest_table = latest.reset_index().rename(columns={"index": "股票"})
     latest_table.insert(0, "排名", range(1, len(latest_table) + 1))
-    st.dataframe(latest_table, hide_index=True)
+    st.dataframe(latest_table, hide_index=True, column_config={"漲跌幅(%)": two_decimals})
 
 
 def _stock_label(data: pd.DataFrame, path: Path) -> str:
@@ -248,7 +333,7 @@ def _stock_label(data: pd.DataFrame, path: Path) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="多檔股票期間績效比較與排行")
-    parser.add_argument("--input", type=Path, nargs="+", required=True, help="兩個以上的股票 CSV 路徑")
+    parser.add_argument("--input", type=Path, nargs="+", required=True, help="2～5 個股票 CSV 路徑")
     parser.add_argument("--start", type=date.fromisoformat, help="開始日期 YYYY-MM-DD")
     parser.add_argument("--end", type=date.fromisoformat, help="結束日期 YYYY-MM-DD")
     parser.add_argument("--rank-by", choices=list(RANKING_METRICS), default=DEFAULT_RANKING_METRIC)
@@ -256,8 +341,8 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 
-    if len(args.input) < 2:
-        parser.error("至少需要兩檔股票才能比較")
+    if not MIN_STOCKS <= len(args.input) <= MAX_STOCKS:
+        parser.error(f"可比較 {MIN_STOCKS}～{MAX_STOCKS} 檔股票，目前為 {len(args.input)} 檔")
     try:
         stocks = {}
         for path in args.input:
