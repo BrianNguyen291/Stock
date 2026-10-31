@@ -73,9 +73,31 @@ jobs:
           az webapp config set --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot test --web-sockets-enabled true --output none
           if ($LASTEXITCODE -ne 0) { throw 'Failed to enable Web sockets on test slot' }
 
-      - name: Deploy to Azure Web App test slot
+      - name: Deploy to Azure Web App test slot (attempt 1)
+        id: deploy_attempt_1
+        continue-on-error: true
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           slot-name: test
           package: dist
+
+      - name: Wait before retrying deployment
+        if: ${{ steps.deploy_attempt_1.outcome == 'failure' }}
+        shell: pwsh
+        run: Start-Sleep -Seconds 20
+
+      - name: Deploy to Azure Web App test slot (attempt 2)
+        id: deploy_attempt_2
+        if: ${{ steps.deploy_attempt_1.outcome == 'failure' }}
+        continue-on-error: true
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          slot-name: test
+          package: dist
+
+      - name: Fail if deployment did not succeed
+        if: ${{ steps.deploy_attempt_1.outcome == 'failure' && steps.deploy_attempt_2.outcome == 'failure' }}
+        shell: pwsh
+        run: throw 'Azure OneDeploy failed after 2 attempts'
