@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: azure-stock-test
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnostics_only && 'azure-stock-test-diagnostics' || 'azure-stock-test' }}
   cancel-in-progress: false
 
 jobs:
