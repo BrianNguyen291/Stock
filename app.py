@@ -7,7 +7,7 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
-from charts import candlestick_chart
+from charts import MA_WINDOWS, candlestick_chart, volume_chart
 from comparison import render_comparison
 from database import StockDatabase
 
@@ -123,16 +123,19 @@ def main() -> None:
     st.line_chart(chart_data)
 
     st.subheader("K 線圖")
-    st.caption("紅 K：收盤高於開盤；綠 K：收盤低於開盤。")
-    st.pyplot(candlestick_chart(filtered, title=f"{stock_label} 日 K 線"))
+    st.caption("紅 K：收盤高於開盤；綠 K：收盤低於開盤。均線資料不足完整天數時留白。")
+    toggle_columns = st.columns(len(MA_WINDOWS) + 1)
+    ma_windows = tuple(
+        window for window, column in zip(MA_WINDOWS, toggle_columns)
+        if column.checkbox(f"MA{window}", value=True, key=f"show_ma_{window}")
+    )
+    show_volume_ma = toggle_columns[-1].checkbox("20 日均量", value=True, key="show_volume_ma_20")
+    st.pyplot(candlestick_chart(filtered, title=f"{stock_label} 日 K 線", ma_windows=ma_windows))
 
     left, right = st.columns(2)
     with left:
         st.subheader("成交量走勢")
-        volume_data = filtered.set_index("date")[["trade_volume"]].rename(
-            columns={"trade_volume": "成交量"}
-        )
-        st.bar_chart(volume_data)
+        st.pyplot(volume_chart(filtered, title=f"{stock_label} 成交量", show_average=show_volume_ma))
     with right:
         st.subheader("交易資料")
         display_columns = {
