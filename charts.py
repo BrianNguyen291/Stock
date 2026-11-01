@@ -1,9 +1,10 @@
-"""股價圖表：收盤價走勢圖、成交量圖及 K 線圖（matplotlib）。
+"""股價圖表：收盤價走勢圖、成交量圖（含 20 日均量）及 K 線圖（含 MA5/MA20/MA60）（matplotlib）。
 
 app.py 匯入後以 ``st.pyplot`` 顯示，也可直接執行輸出 PNG：
     python charts.py --input 2327.csv --output-dir data/charts
 
-傳入的資料應為 ``data_processor.load_data`` 處理後的 DataFrame。
+傳入的資料應為 ``data_processor.load_data`` 處理後的 DataFrame；均線與均量直接使用其
+``ma_*``、``volume_ma_20`` 欄位，不在此重算（裁切日期前已用完整前期資料計算）。
 顏色採台股慣例：紅漲、綠跌。
 """
 
@@ -27,6 +28,9 @@ DOWN_COLOR = "#2ca02c"
 FLAT_COLOR = "#7f7f7f"
 LINE_COLOR = "#1f77b4"
 MA_COLOR = "#ff7f0e"
+MA_WINDOWS = (5, 20, 60)
+MA_COLORS = {5: "#ff7f0e", 20: "#9467bd", 60: "#8c564b"}
+VOLUME_MA_COLUMN = "volume_ma_20"
 FIGSIZE = (10, 4)
 MAX_DATE_TICKS = 8
 CANDLE_WIDTH = 0.6
@@ -76,6 +80,11 @@ def _change_colors(change: pd.Series) -> np.ndarray:
     return np.select([values > 0, values < 0], [UP_COLOR, DOWN_COLOR], FLAT_COLOR)
 
 
+def _values(frame: pd.DataFrame, column: str) -> np.ndarray:
+    """可為空的 Float64 轉成浮點數，缺值為 NaN：matplotlib 會留空缺而不是畫成 0。"""
+    return frame[column].to_numpy(dtype=float, na_value=np.nan)
+
+
 def price_trend_chart(data: pd.DataFrame, title: str = "收盤價走勢") -> Figure:
     """收盤價走勢圖。"""
     frame = _prepare(data, ["close"])
@@ -87,16 +96,16 @@ def price_trend_chart(data: pd.DataFrame, title: str = "收盤價走勢") -> Fig
     return figure
 
 
-def volume_chart(data: pd.DataFrame, title: str = "成交量") -> Figure:
-    """成交量長條圖，依當日漲跌上色，並疊加五日均量（若有 volume_ma_5 欄位）。"""
+def volume_chart(data: pd.DataFrame, title: str = "成交量", show_average: bool = True) -> Figure:
+    """成交量長條圖，依當日漲跌上色；show_average 時疊加 20 日均量（需有 volume_ma_20 欄位）。"""
     frame = _prepare(data, ["trade_volume"])
     figure, axes = _new_axes()
     x = range(len(frame))
     change = frame["price_change"] if "price_change" in frame.columns else pd.Series(0, index=frame.index)
     axes.bar(x, frame["trade_volume"], width=CANDLE_WIDTH, color=_change_colors(change))
-    if "volume_ma_5" in frame.columns:
-        axes.plot(x, frame["volume_ma_5"], color=MA_COLOR, linewidth=1.5, label="五日均量")
-        axes.legend(loc="upper left")
+    if show_average and VOLUME_MA_COLUMN in frame.columns:
+        axes.plot(x, _values(frame, VOLUME_MA_COLUMN), color=MA_COLOR, linewidth=1.5, label="20 日均量（股）")
+        axes.legend(loc="upper left", fontsize="small")
     axes.set_title(title)
     axes.set_ylabel("成交量（股）")
     axes.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:,.0f}"))
@@ -104,8 +113,11 @@ def volume_chart(data: pd.DataFrame, title: str = "成交量") -> Figure:
     return figure
 
 
-def candlestick_chart(data: pd.DataFrame, title: str = "K 線圖") -> Figure:
-    """日 K 線圖：收盤高於開盤為紅 K、低於開盤為綠 K，影線為當日最高與最低價。"""
+def candlestick_chart(data: pd.DataFrame, title: str = "K 線圖", ma_windows=MA_WINDOWS) -> Figure:
+    """日 K 線圖：收盤高於開盤為紅 K、低於開盤為綠 K，影線為當日最高與最低價。
+
+    ma_windows 指定要疊加的均線（如 (5, 60)）；資料中沒有對應 ma_* 欄位的視窗會略過。
+    """
     frame = _prepare(data, OHLC_COLUMNS)
     figure, axes = _new_axes()
     x = np.arange(len(frame))
@@ -123,9 +135,20 @@ def candlestick_chart(data: pd.DataFrame, title: str = "K 線圖") -> Figure:
         color=colors,
         edgecolor=colors,
     )
+    bottom, top = low.min(), high.max()
+    for window in ma_windows:
+        column = f"ma_{window}"
+        if column not in frame.columns:
+            continue
+        values = _values(frame, column)
+        axes.plot(x, values, color=MA_COLORS.get(window, LINE_COLOR), linewidth=1.2, label=f"MA{window}")
+        if not np.isnan(values).all():
+            bottom, top = min(bottom, np.nanmin(values)), max(top, np.nanmax(values))
+    if axes.get_lines():
+        axes.legend(loc="upper left", ncols=len(axes.get_lines()), fontsize="small")
     # bar 的底部會黏住自動縮放邊界，手動留白，避免最低價貼齊圖框看起來像被截斷。
-    padding = price_range * PRICE_PADDING_RATIO
-    axes.set_ylim(low.min() - padding, high.max() + padding)
+    padding = max(top - bottom, 0.01) * PRICE_PADDING_RATIO
+    axes.set_ylim(bottom - padding, top + padding)
     axes.set_title(title)
     axes.set_ylabel("股價（元）")
     _set_date_ticks(axes, frame["date"])
