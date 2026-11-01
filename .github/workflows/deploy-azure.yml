@@ -97,6 +97,22 @@ jobs:
           az webapp deployment source config-zip --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot staging --src stock-staging.zip --timeout 1800 --only-show-errors --output none
           if ($LASTEXITCODE -ne 0) { throw 'Direct ZIP deployment to staging slot failed; inspect the Azure deployment logs' }
 
+      # 新 slot 部署後不一定會啟動 Python；重啟並確認健康後才允許 swap，避免把壞掉的版本換上正式機。
+      - name: Restart staging slot and wait until healthy
+        shell: pwsh
+        run: |
+          az webapp restart --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot staging --output none
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to restart staging slot' }
+          $hostName = az webapp show --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot staging --query defaultHostName --output tsv
+          $url = "https://$($hostName.Trim())/_stcore/health"
+          for ($i = 1; $i -le 20; $i++) {
+            try {
+              if ((Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 60).StatusCode -eq 200) { Write-Host "Staging healthy: $url"; exit 0 }
+            } catch { Write-Host "Attempt ${i}: $($_.Exception.Message)" }
+            Start-Sleep -Seconds 15
+          }
+          throw "Staging slot did not become healthy at $url; not swapping"
+
       - name: Read Azure logs if deployment fails
         if: ${{ failure() }}
         continue-on-error: true
