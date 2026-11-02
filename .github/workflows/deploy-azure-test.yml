@@ -4,6 +4,15 @@ on:
   push:
     branches: [dev]
   workflow_dispatch:
+    inputs:
+      diagnostics_only:
+        description: 'Read Azure test-slot deployment diagnostics without deploying'
+        type: boolean
+        default: false
+      verify_persistence:
+        description: 'Verify test-slot SQLite persistence across restart and redeploy'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -13,7 +22,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  diagnose:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnostics_only }}
+    runs-on: ubuntu-latest
+    env:
+      AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+    steps:
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Inspect test-slot deployment history
+        run: az webapp log deployment list --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_WEBAPP_NAME" --slot test --output json
+      - name: Inspect latest test-slot deployment logs
+        run: az webapp log deployment show --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_WEBAPP_NAME" --slot test --output json
   deploy:
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.diagnostics_only) }}
     runs-on: windows-latest
     env:
       AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
@@ -37,8 +62,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force dist\runtime | Out-Null
-          Copy-Item app.py, charts.py, comparison.py, data_processor.py, serve.py, web.config dist\
+          New-Item -ItemType Directory -Force dist\data\raw | Out-Null
+          Copy-Item app.py, charts.py, comparison.py, crawler.py, data_processor.py, database.py, serve.py, web.config dist\
           Copy-Item *.csv dist\
+          Copy-Item data\raw\*.csv dist\data\raw\
           python -m pip install --target dist\site-packages -r requirements.txt
           if ($LASTEXITCODE -ne 0) { throw 'Dependency packaging failed' }
 
@@ -53,6 +80,9 @@ jobs:
           Set-Content -Path dist\runtime\python314._pth -Value @('python314.zip', '.', '..', '..\site-packages', 'import site')
           & .\dist\runtime\python.exe -c 'import streamlit, matplotlib, app, serve'
           if ($LASTEXITCODE -ne 0) { throw 'Packaged Python runtime could not import the app' }
+
+          python -c "import shutil; shutil.make_archive('stock-test', 'zip', 'dist')"
+          if ($LASTEXITCODE -ne 0) { throw 'Deployment ZIP packaging failed' }
 
       - name: Sign in to Azure
         uses: azure/login@v2
@@ -73,9 +103,35 @@ jobs:
           az webapp config set --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot test --web-sockets-enabled true --output none
           if ($LASTEXITCODE -ne 0) { throw 'Failed to enable Web sockets on test slot' }
 
+      - name: Record database baseline and add isolated test marker
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_persistence }}
+        run: python scripts/verify_azure_persistence.py --phase prepare
+
+      - name: Restart test slot and verify historical data
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_persistence }}
+        run: python scripts/verify_azure_persistence.py --phase restart
+
       - name: Deploy to Azure Web App test slot
-        uses: azure/webapps-deploy@v3
+        shell: pwsh
+        run: |
+          az webapp deployment source config-zip --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot test --src stock-test.zip --timeout 1800 --only-show-errors --output none
+          if ($LASTEXITCODE -ne 0) { throw 'Direct ZIP deployment to test slot failed; inspect the Azure deployment logs' }
+
+      - name: Read Azure logs if deployment fails
+        if: ${{ failure() }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          az webapp log deployment show --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot test --output json
+
+      - name: Verify data after redeploy and clean up test marker
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_persistence }}
+        run: python scripts/verify_azure_persistence.py --phase redeploy
+
+      - name: Save persistence acceptance evidence
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.verify_persistence }}
+        uses: actions/upload-artifact@v4
         with:
-          app-name: ${{ env.AZURE_WEBAPP_NAME }}
-          slot-name: test
-          package: dist
+          name: sqlite-persistence-${{ github.run_id }}
+          path: persistence-evidence/
+          if-no-files-found: warn

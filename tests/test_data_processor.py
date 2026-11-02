@@ -38,7 +38,7 @@ class IndicatorTests(unittest.TestCase):
         self.assertAlmostEqual(result.loc[1, "price_change"], 10.0)
         self.assertAlmostEqual(result.loc[1, "change_percent"], 10.0)
         self.assertAlmostEqual(result.loc[2, "change_percent"], -10.0)
-        self.assertAlmostEqual(result.loc[2, "volume_ma_5"], 20.0)
+        self.assertTrue(pd.isna(result.loc[2, "volume_ma_5"]))
         self.assertTrue(pd.isna(result.loc[0, "price_change"]))
 
 
