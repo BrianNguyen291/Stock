@@ -228,18 +228,19 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       
-      - name: Disable automatic WebJob schedule on test slot
+      
+      - name: Configure stock WebJob on test slot
         shell: pwsh
         run: |
           az webapp config appsettings set `
             --resource-group $env:AZURE_RESOURCE_GROUP `
             --name $env:AZURE_WEBAPP_NAME `
             --slot test `
-            --slot-settings WEBJOBS_DISABLE_SCHEDULE=1 `
+            --slot-settings WEBJOBS_DISABLE_SCHEDULE=1 STOCK_WEBJOB_ALLOWED_SLOT=test `
             --output none
 
           if ($LASTEXITCODE -ne 0) {
-            throw 'Failed to disable WebJob schedule'
+            throw 'Failed to configure stock WebJob on test slot'
           }
 
       - name: Verify Windows Web App test slot

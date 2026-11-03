@@ -12,8 +12,8 @@ if not exist "%PYTHON_EXE%" (
     exit /b 1
 )
 
-if /I not "%WEBSITE_SLOT_NAME%"=="test" (
-    echo ERROR: This WebJob is restricted to the test slot.
+if /I not "%STOCK_WEBJOB_ALLOWED_SLOT%"=="test" (
+    echo ERROR: stock-update is not authorized for this slot.
     exit /b 1
 )
 
