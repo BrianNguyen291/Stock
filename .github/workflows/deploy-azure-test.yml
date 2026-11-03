@@ -107,8 +107,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "=== Get WebJob output URL ==="
-
+          echo "=== Locate latest Azure WebJob output ==="
           output_url=$(az webapp webjob triggered list \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --name "$AZURE_WEBAPP_NAME" \
@@ -116,17 +115,48 @@ jobs:
             --query "[?contains(name, 'stock-update')].latestRun.outputUrl | [0]" \
             --output tsv)
 
-          if [ -z "$output_url" ] || [ "$output_url" = "None" ]; then
-            echo "ERROR: No WebJob output URL found."
+          if [[ -z "$output_url" || "$output_url" == "None" ]]; then
+            echo "ERROR: No output URL was returned by Azure."
             exit 1
           fi
 
-          echo "=== Read WebJob output through Azure SCM ==="
+          # Avoid sending publishing credentials to any unexpected host.
+          case "$output_url" in
+            "https://${AZURE_WEBAPP_NAME}-test.scm.azurewebsites.net/vfs/data/jobs/triggered/stock-update/"* | \
+            "https://${AZURE_WEBAPP_NAME}-test.scm.azurewebsites.net:443/vfs/data/jobs/triggered/stock-update/"*) ;;
+            *) echo "ERROR: Unexpected WebJob output URL host or path."; exit 1 ;;
+          esac
 
-          az rest \
-            --method get \
-            --url "$output_url" \
-            --output json
+          echo "=== Read test-slot SCM publishing credentials ==="
+          username=$(az webapp deployment list-publishing-credentials \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test --query publishingUserName --output tsv)
+          password=$(az webapp deployment list-publishing-credentials \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test --query publishingPassword --output tsv)
+          if [[ -z "$username" || -z "$password" || "$username" == "None" || "$password" == "None" ]]; then
+            echo "ERROR: SCM publishing credentials are unavailable."
+            exit 1
+          fi
+          echo "::add-mask::$username"
+          echo "::add-mask::$password"
+
+          log_file="$RUNNER_TEMP/stock-update-output.txt"
+          http_status=$(curl --silent --show-error \
+            --connect-timeout 10 --max-time 45 \
+            --user "$username:$password" \
+            --output "$log_file" --write-out "%{http_code}" \
+            "$output_url")
+          if [[ "$http_status" != "200" ]]; then
+            echo "ERROR: SCM output retrieval failed with HTTP $http_status."
+            echo "SCM basic authentication may be disabled or restricted. Do not enable it without administrator approval."
+            exit 1
+          fi
+
+          echo "=== WebJob output (last 80 lines; review before sharing) ==="
+          tail -n 80 "$log_file"
 
   deploy:
     if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.diagnostics_only || inputs.run_stock_webjob)) }}
