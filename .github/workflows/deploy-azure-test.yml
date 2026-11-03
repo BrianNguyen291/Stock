@@ -93,7 +93,7 @@ jobs:
           $archive = Join-Path $env:RUNNER_TEMP 'python-embed.zip'
           $url = "https://www.python.org/ftp/python/$env:PYTHON_RUNTIME_VERSION/python-$env:PYTHON_RUNTIME_VERSION-embed-amd64.zip"
           Invoke-WebRequest -Uri $url -OutFile $archive
-          $expectedHash = 'A93ABE456AB01BD96D7A085B3DC6566B3063F4241360D114142FBDB07F0A310'
+          $expectedHash = 'A93ABE456AB01BD96D7A085B3CDB6566B3063F4241360D114142FBDB07F0A310'
           if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash -ne $expectedHash) {
             throw 'Python runtime archive checksum mismatch'
           }
