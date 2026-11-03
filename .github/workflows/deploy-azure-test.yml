@@ -101,6 +101,32 @@ jobs:
             --slot test \
             --webjob-name stock-update \
             --output json
+      
+      - name: Read latest stock-update output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Get WebJob output URL ==="
+
+          output_url=$(az webapp webjob triggered list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query "[?contains(name, 'stock-update')].latestRun.outputUrl | [0]" \
+            --output tsv)
+
+          if [ -z "$output_url" ] || [ "$output_url" = "None" ]; then
+            echo "ERROR: No WebJob output URL found."
+            exit 1
+          fi
+
+          echo "=== Read WebJob output through Azure SCM ==="
+
+          az rest \
+            --method get \
+            --url "$output_url" \
+            --output json
 
   deploy:
     if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.diagnostics_only || inputs.run_stock_webjob)) }}
