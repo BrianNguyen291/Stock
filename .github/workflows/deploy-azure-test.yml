@@ -40,6 +40,34 @@ jobs:
 
       - name: Inspect latest test-slot deployment logs
         run: az webapp log deployment show --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_WEBAPP_NAME" --slot test --output json
+
+      - name: Check stock-update WebJob on Azure test slot
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking WebJobs on Azure test slot..."
+
+          az webapp webjob triggered list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --output table
+
+          echo "Checking stock-update registration..."
+
+          az webapp webjob triggered list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query "[?name=='stock-update'].name" \
+            --output tsv |
+          grep -Fx "stock-update" || {
+            echo "ERROR: stock-update WebJob not found"
+            exit 1
+          }
+
+          echo "SUCCESS: stock-update is registered"
   
   deploy:
     if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.diagnostics_only) }}
