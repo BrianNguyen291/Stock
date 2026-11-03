@@ -14,7 +14,7 @@ from charts import MA_WINDOWS, candlestick_chart, volume_chart
 from comparison import render_comparison
 from crawler import crawl
 from database import StockDatabase
-
+from stock_lookup import render_stock_lookup
 
 DATA_DIR = Path(__file__).parent
 STOCK_FILE_PATTERN = re.compile(r"\d{4,6}")
@@ -71,7 +71,7 @@ def read_stock_data(path: str) -> pd.DataFrame:
     return database.query_prices(Path(path).stem)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(ttl=60, max_entries=128, show_spinner=False)
 def load_dashboard_data(path_text: str) -> tuple[pd.DataFrame, dict | None]:
     path = Path(path_text)
     database = StockDatabase()
@@ -358,7 +358,7 @@ def main() -> None:
             else:
                 st.success(f"已更新 {len(updated)} 檔股票，正在重新載入最新資料。")
             st.rerun()
-        pages = ["個股儀表板", "條件選股", "股票比較"]
+        pages = ["個股儀表板", "查詢股票", "條件選股", "股票比較"]
         requested_page = st.session_state.pop("requested_page", None)
         if requested_page in pages:
             st.session_state["page"] = requested_page
@@ -368,15 +368,18 @@ def main() -> None:
     stocks, errors = load_all_stocks()
     render_status(stocks, errors)
     should_scroll_to_top = st.session_state.pop("scroll_to_top", False)
-    if page == "股票比較":
+    
+    if page == "查詢股票":
+        render_stock_lookup()
+    elif page == "股票比較":
         render_comparison(STOCK_FILES, read_stock_data)
     elif page == "條件選股":
         render_stock_picker(stocks)
     else:
         render_single_stock(stocks)
+
     if should_scroll_to_top:
         scroll_to_top()
-
 
 if __name__ == "__main__":
     main()
