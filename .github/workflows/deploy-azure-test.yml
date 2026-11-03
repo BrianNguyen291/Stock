@@ -14,6 +14,15 @@ on:
         description: 'Verify test-slot SQLite persistence across restart and redeploy'
         type: boolean
         default: false
+      
+      run_stock_webjob:
+        description: 'Manually run stock-update WebJob in Azure test slot'
+        type: boolean
+        default: false
+      confirm_test_db_write:
+        description: 'I confirm that updating the test SQLite is allowed'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -71,7 +80,7 @@ jobs:
           echo "SUCCESS: stock-update is registered"
 
   deploy:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.diagnostics_only) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.diagnostics_only || inputs.run_stock_webjob)) }}
     runs-on: windows-latest
     env:
       AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
@@ -199,3 +208,87 @@ jobs:
           name: sqlite-persistence-${{ github.run_id }}
           path: persistence-evidence/
           if-no-files-found: warn
+ 
+  verify_stock_webjob:
+    name: Manually verify stock-update WebJob
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_stock_webjob && !inputs.diagnostics_only }}
+    runs-on: ubuntu-latest
+
+    env:
+      AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+
+    steps:
+      - name: Confirm test database write permission
+        shell: bash
+        env:
+          CONFIRMED: ${{ inputs.confirm_test_db_write }}
+        run: |
+          if [ "$CONFIRMED" != "true" ]; then
+            echo "ERROR: Test database write was not confirmed."
+            exit 1
+          fi
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Verify test slot safety settings
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          schedule_disabled=$(az webapp config appsettings list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query "[?name=='WEBJOBS_DISABLE_SCHEDULE'].value | [0]" \
+            --output tsv)
+
+          if [ "$schedule_disabled" != "1" ]; then
+            echo "ERROR: Automatic schedule is not disabled."
+            exit 1
+          fi
+
+          job_names=$(az webapp webjob triggered list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query "[].name" \
+            --output tsv)
+
+          if ! printf '%s\n' "$job_names" | grep -Eq '(^|/)stock-update$'; then
+            echo "ERROR: stock-update WebJob not found."
+            exit 1
+          fi
+
+          echo "SUCCESS: Test slot safety checks passed."
+
+      - name: Manually trigger stock-update
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Starting stock-update on Azure TEST slot..."
+
+          az webapp webjob triggered run \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --webjob-name stock-update \
+            --output json
+
+          echo "WebJob trigger request completed."
+
+      - name: Retrieve WebJob execution history
+        if: ${{ always() && inputs.confirm_test_db_write }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          az webapp webjob triggered log \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --webjob-name stock-update \
+            --output json
