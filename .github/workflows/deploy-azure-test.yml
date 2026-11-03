@@ -187,7 +187,11 @@ jobs:
 
           # Package application, stock data and scheduled update scripts
           New-Item -ItemType Directory -Force dist\data\raw | Out-Null
-          Copy-Item app.py, charts.py, comparison.py, crawler.py, data_processor.py, database.py, serve.py, web.config, update_data.py, stocks.json dist\
+          Copy-Item app.py, charts.py, comparison.py, crawler.py, data_processor.py, database.py, stock_lookup.py, serve.py, web.config, update_data.py, stocks.json dist\
+  
+          if (!(Test-Path "dist\stock_lookup.py")) {
+              throw "Missing stock_lookup.py in deployment package"
+          }
           Copy-Item *.csv dist\
           Copy-Item data\raw\*.csv dist\data\raw\
 
