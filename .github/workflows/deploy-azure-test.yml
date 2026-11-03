@@ -78,6 +78,29 @@ jobs:
           fi
 
           echo "SUCCESS: stock-update is registered"
+      
+      - name: Inspect latest stock-update execution
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Latest WebJob execution ==="
+
+          az webapp webjob triggered list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query "[?contains(name, 'stock-update')].{Name:name,Status:latestRun.status,Start:latestRun.startTime,End:latestRun.endTime,Output:latestRun.outputUrl}" \
+            --output json
+
+          echo "=== WebJob execution history ==="
+
+          az webapp webjob triggered log \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --webjob-name stock-update \
+            --output json
 
   deploy:
     if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.diagnostics_only || inputs.run_stock_webjob)) }}
