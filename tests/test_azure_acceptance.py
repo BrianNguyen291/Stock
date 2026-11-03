@@ -17,6 +17,11 @@ MARKER_ID = "Z123456789"
 MARKER_NOTE = "issue-9-acceptance:local-test"
 
 
+def csv_history_length(stock_id):
+    with (ROOT / f"{stock_id}.csv").open(encoding="utf-8-sig") as file:
+        return sum(1 for _ in file) - 1
+
+
 @pytest.fixture
 def deployed_home(tmp_path, monkeypatch):
     root = tmp_path / "site" / "wwwroot"
@@ -51,7 +56,7 @@ def test_marker_and_history_survive_probe_then_only_marker_is_cleaned(deployed_h
     db = StockDatabase()
     assert db.query_prices(MARKER_ID).empty
     for stock_id in ("2327", "2492"):
-        assert len(db.query_prices(stock_id)) == 193
+        assert len(db.query_prices(stock_id)) == csv_history_length(stock_id)
     with db.connect() as connection:
         assert connection.execute("SELECT COUNT(*) FROM update_logs WHERE source=?", (MARKER_NOTE,)).fetchone()[0] == 0
 
@@ -89,8 +94,9 @@ def test_configure_migrates_history_when_windows_omits_slot_name(deployed_home, 
     assert configuration["migrated"]
     assert Path(configuration["target_path"]).name == "test.sqlite3"
     migrated = StockDatabase(configuration["target_path"])
-    assert len(migrated.query_prices("2327")) == 193
-    assert len(original.query_prices("2327")) == 193
+    expected_length = csv_history_length("2327")
+    assert len(migrated.query_prices("2327")) == expected_length
+    assert len(original.query_prices("2327")) == expected_length
 
 
 def test_keeps_stable_home_alias_instead_of_resolved_storage_path(deployed_home, monkeypatch):

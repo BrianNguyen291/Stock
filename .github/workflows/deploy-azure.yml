@@ -1,3 +1,4 @@
+# 藍綠佈署：先部署到 staging slot，production environment 簽核通過後再 swap 到正式機。
 name: Deploy Stock to Azure
 
 on:
@@ -27,6 +28,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: windows-latest
+    environment: staging
     env:
       AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
       AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
@@ -49,8 +51,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force dist\runtime | Out-Null
-          Copy-Item app.py, charts.py, comparison.py, data_processor.py, database.py, serve.py, web.config dist\
+          New-Item -ItemType Directory -Force dist\data\raw | Out-Null
+          Copy-Item app.py, charts.py, comparison.py, crawler.py, data_processor.py, database.py, serve.py, web.config dist\
           Copy-Item *.csv dist\
+          Copy-Item data\raw\*.csv dist\data\raw\
           python -m pip install --target dist\site-packages -r requirements.txt
           if ($LASTEXITCODE -ne 0) { throw 'Dependency packaging failed' }
 
@@ -66,27 +70,73 @@ jobs:
           & .\dist\runtime\python.exe -c 'import streamlit, matplotlib, app, serve'
           if ($LASTEXITCODE -ne 0) { throw 'Packaged Python runtime could not import the app' }
 
+          python -c "import shutil; shutil.make_archive('stock-staging', 'zip', 'dist')"
+          if ($LASTEXITCODE -ne 0) { throw 'Deployment ZIP packaging failed' }
+
       - name: Sign in to Azure
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Verify Windows Web App
+      - name: Verify Windows Web App staging slot
         shell: pwsh
         run: |
-          $platform = az webapp show --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --query reserved --output tsv
-          if ($LASTEXITCODE -ne 0) { throw 'Azure Web App lookup failed' }
+          $platform = az webapp show --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot staging --query reserved --output tsv
+          if ($LASTEXITCODE -ne 0) { throw 'Azure Web App staging slot lookup failed' }
           if ($platform.Trim().ToLowerInvariant() -ne 'false') { throw 'Target must be a Windows Azure Web App' }
 
       # Streamlit 透過 WebSocket 與瀏覽器溝通，Web App 必須開啟 Web sockets。
-      - name: Enable Web sockets
+      - name: Enable Web sockets on staging slot
         shell: pwsh
         run: |
-          az webapp config set --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --web-sockets-enabled true --output none
-          if ($LASTEXITCODE -ne 0) { throw 'Failed to enable Web sockets' }
+          az webapp config set --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot staging --web-sockets-enabled true --output none
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to enable Web sockets on staging slot' }
 
-      - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v3
+      # 與 test slot 相同改用直接 ZIP 上傳，避開 webapps-deploy (OneDeploy) 偶發的 400。
+      - name: Deploy to Azure Web App staging slot
+        shell: pwsh
+        run: |
+          az webapp deployment source config-zip --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot staging --src stock-staging.zip --timeout 1800 --only-show-errors --output none
+          if ($LASTEXITCODE -ne 0) { throw 'Direct ZIP deployment to staging slot failed; inspect the Azure deployment logs' }
+
+      # 新 slot 部署後不一定會啟動 Python；重啟並確認健康後才允許 swap，避免把壞掉的版本換上正式機。
+      - name: Restart staging slot and wait until healthy
+        shell: pwsh
+        run: |
+          az webapp restart --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot staging --output none
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to restart staging slot' }
+          $hostName = az webapp show --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot staging --query defaultHostName --output tsv
+          $url = "https://$($hostName.Trim())/_stcore/health"
+          for ($i = 1; $i -le 20; $i++) {
+            try {
+              if ((Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 60).StatusCode -eq 200) { Write-Host "Staging healthy: $url"; exit 0 }
+            } catch { Write-Host "Attempt ${i}: $($_.Exception.Message)" }
+            Start-Sleep -Seconds 15
+          }
+          throw "Staging slot did not become healthy at $url; not swapping"
+
+      - name: Read Azure logs if deployment fails
+        if: ${{ failure() }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          az webapp log deployment show --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot staging --output json
+
+  swap:
+    needs: deploy
+    runs-on: windows-latest
+    environment: production
+    env:
+      AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+    steps:
+      - name: Sign in to Azure
+        uses: azure/login@v2
         with:
-          app-name: ${{ env.AZURE_WEBAPP_NAME }}
-          package: dist
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Swap staging slot into production
+        shell: pwsh
+        run: |
+          az webapp deployment slot swap --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot staging --target-slot production
+          if ($LASTEXITCODE -ne 0) { throw 'Azure Web App slot swap failed' }
