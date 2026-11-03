@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import sys
 
 import pandas as pd
 
@@ -175,6 +176,25 @@ class StockDatabase:
         data = pd.read_csv(path, encoding="utf-8-sig", dtype={"stock_id": str})
         return self.upsert_prices(data, source=str(path), only_if_empty=only_if_empty)
 
+    def latest_update(self, source: str | Path | None = None) -> dict | None:
+        """Return the most recent successful import record, optionally for one source."""
+        with self.connect() as connection:
+            if source is None:
+                row = connection.execute(
+                    "SELECT updated_at, source, row_count FROM update_logs "
+                    "ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+            else:
+                source_text = str(source)
+                row = connection.execute(
+                    "SELECT updated_at, source, row_count FROM update_logs "
+                    "WHERE source = ? OR source LIKE ? ORDER BY id DESC LIMIT 1",
+                    (source_text, f"%{Path(source_text).name}"),
+                ).fetchone()
+        if row is None:
+            return None
+        return {"updated_at": row[0], "source": row[1], "row_count": row[2]}
+
     def query_prices(self, stock_id: str, start=None, end=None, *, indicators: bool = True) -> pd.DataFrame:
         """含起訖日；先讀前 59 個交易日計算 MA60，再裁切使用者區間。"""
         stock_id = _stock_id(stock_id)
@@ -209,6 +229,8 @@ class StockDatabase:
 
 
 def main():
+    # Windows 的管線預設可能使用 cp1252，無法輸出中文狀態及路徑。
+    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="匯入股票 CSV 到 SQLite")
     parser.add_argument("--db", type=Path, help="覆寫資料庫路徑")
     parser.add_argument("--import-csv", type=Path, nargs="+", required=True)

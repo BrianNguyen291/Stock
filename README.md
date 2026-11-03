@@ -18,6 +18,14 @@ streamlit run app.py
 
 儀表板提供股票選擇、日期範圍篩選、最新股價資訊卡片、收盤價與成交量圖表，以及交易資料表。
 
+儀表板目前內建 12 檔台股資料來源（1101、1216、1301、2002、2303、2317、2327、
+2330、2408、2449、2492、2881），會自動讀取專案根目錄及 `data/raw/` 下的股票 CSV，
+並由 `crawler.py` 從臺灣證券交易所取得資料。側邊欄的「更新全部資料」會逐檔更新股票：
+首次匯入抓取最近一年的資料，已有資料的股票只抓取最近約兩個月，再與既有 CSV 合併、
+依股票代號與日期去除重複後寫回，避免每次更新重抓完整歷史資料。更新完成後會寫入
+SQLite、清除 Streamlit 快取並重新查詢；個別股票抓取失敗時會保留既有資料並在狀態卡片
+顯示失敗原因。
+
 ## SQLite 與技術指標（#9）
 
 儀表板改從 SQLite 查詢。首次讀取某支股票時會匯入隨附 CSV，之後不會用舊 CSV 覆蓋資料庫中的更新。若要主動新增或更新 CSV 資料，可執行：
@@ -57,7 +65,13 @@ python -m pytest tests -q
 
 測試使用暫存資料庫，涵蓋兩份 CSV 全列比對、重複匯入、不同股票同日資料、含起訖日查詢、可手算指標、前期視窗、無效資料拒絕及寫入失敗回滾，並以新 Python 行程與替換部署目錄模擬資料保留。
 
-Azure 實測尚待部署環境執行，本機模擬不代表 Azure 驗收完成：
+Azure 實測可在 GitHub Actions 的「Deploy Stock to Azure test slot」選擇 Run workflow、分支 `dev`，並勾選 `verify_persistence` 執行。流程會使用既有 Azure 登入，透過 [Kudu command API](https://github.com/projectkudu/kudu/wiki/REST-API#command) 在 test slot 寫入獨立的隨機測試股票資料，保存所有歷史價格與股票名稱的 SHA-256，重啟後比對、重新部署後再比對，並確認正式資料庫沒有測試紀錄。正式環境僅讀取，不建立資料庫或寫入資料。
+
+驗收成功後自動清除該次測試股票及更新紀錄；失敗則保留供追查。驗收證據保存在該次 Actions 的 `sqlite-persistence-<run_id>` artifact。預設 push 部署不執行這項驗收。沒有成功的實際執行紀錄前，本機模擬不代表 Azure 驗收完成。
+
+Windows 管理程序可能沒有 `WEBSITE_SLOT_NAME`。驗收流程會以 Azure 的 test slot 資源選擇管理端點，明確將該 slot 的 `STOCK_DB_PATH` 設為 `%HOME%/data/stock/test.sqlite3` 的絕對路徑，並標記為 slot setting；若舊的預設資料庫已有歷史資料，先以 SQLite backup 複製到新的測試路徑，保留原檔。若新舊資料庫同時存在則停止，避免覆蓋資料。
+
+若需手動核對：
 
 1. 在 test slot 確認實際資料庫路徑位於 `%HOME%/data/stock/`，載入兩支股票，記下筆數、日期範圍及一筆歷史 OHLC／成交量。
 2. 透過 `upsert_prices` 在測試庫加入一筆 CSV 沒有的測試紀錄，記下內容，確保後續驗證不會被自動匯入掩蓋。

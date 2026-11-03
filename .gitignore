@@ -4,6 +4,8 @@ __pycache__/
 .env
 data/
 *.csv
+# 根目錄的 <股票代號>.csv 是 app 的種子資料，需要部署。
+!/[0-9][0-9][0-9][0-9]*.csv
 *.sqlite
 *.sqlite3
 *.sqlite3-journal

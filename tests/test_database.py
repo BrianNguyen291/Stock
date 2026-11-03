@@ -130,17 +130,21 @@ def test_azure_defaults_and_explicit_path_are_isolated(monkeypatch, tmp_path):
         get_database_path()
 
 
-def test_local_restart_and_replaced_deployment_preserve_database(tmp_path):
+@pytest.mark.parametrize("stdio_encoding", ["utf-8", "cp1252"])
+def test_local_restart_and_replaced_deployment_preserve_database(tmp_path, monkeypatch, stdio_encoding):
     # 本機模擬；不代表已在 Azure 執行重啟／部署驗收。
+    monkeypatch.setenv("PYTHONIOENCODING", stdio_encoding)
     deployment = tmp_path / "site" / "wwwroot"
     deployment.mkdir(parents=True)
-    path = tmp_path / "data" / "stock.sqlite3"
+    path = tmp_path / "data" / "股票.sqlite3"
     for filename in ("database.py", "data_processor.py"):
         shutil.copy(ROOT / filename, deployment)
-    subprocess.run([
+    imported = subprocess.run([
         sys.executable, str(deployment / "database.py"), "--db", str(path),
         "--import-csv", str(ROOT / "2327.csv"),
-    ], check=True, capture_output=True)
+    ], capture_output=True)
+    assert imported.returncode == 0, imported.stderr.decode("utf-8", errors="replace")
+    assert str(path) in imported.stdout.decode("utf-8")
     before = StockDatabase(path).query_prices("2327")
     shutil.rmtree(deployment)
     deployment.mkdir()
