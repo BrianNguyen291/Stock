@@ -317,6 +317,34 @@ jobs:
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Verify shared SQLite database path
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Azure test slot SQLite configuration ==="
+
+          db_path=$(az webapp config appsettings list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query "[?name=='STOCK_DB_PATH'].value | [0]" \
+            --output tsv)
+
+          expected='C:\home\data\stock\test.sqlite3'
+
+          if [[ -z "$db_path" || "$db_path" == "None" ]]; then
+            echo "RESULT: STOCK_DB_PATH is not explicitly configured."
+            exit 1
+          fi
+
+          if [[ "${db_path,,}" == "${expected,,}" ]]; then
+            echo "SUCCESS: Dashboard and WebJob are configured to use test.sqlite3"
+          else
+            echo "ERROR: STOCK_DB_PATH differs from the expected test database."
+            exit 1
+          fi
 
       - name: Verify test slot safety settings
         shell: bash
