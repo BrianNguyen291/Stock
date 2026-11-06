@@ -29,6 +29,8 @@ def main() -> None:
         "none",
         "--browser.gatherUsageStats",
         "false",
+        "--theme.base",
+        "light",
     ]
     sys.exit(stcli.main())
 

@@ -185,13 +185,14 @@ def _format_cell(value) -> str:
 def render_comparison(
     stock_files: dict[str, Path],
     loader: Callable[[str], pd.DataFrame] = load_data,
+    *,
+    date_slot=None,
 ) -> None:
     """在 Streamlit 頁面中繪製股票比較與進階分析區塊。"""
     import streamlit as st
 
-    st.subheader("股票比較與進階分析")
     labels = list(stock_files)
-    with st.sidebar:
+    with st.container(key="dashboard_filters"):
         selected = st.multiselect(
             "選擇比較股票",
             labels,
@@ -223,14 +224,16 @@ def render_comparison(
 
     min_date = all_closes.index.min().date()
     max_date = all_closes.index.max().date()
-    with st.sidebar:
-        selected_dates = st.date_input(
-            "比較區間",
-            value=(min_date, max_date),
-            min_value=min_date,
-            max_value=max_date,
-            key="comparison_dates",
-        )
+    date_filter = st if date_slot is None else date_slot.popover(
+        "比較區間", icon=":material/calendar_month:", help="比較區間",
+    )
+    selected_dates = date_filter.date_input(
+        "比較區間",
+        value=(min_date, max_date),
+        min_value=min_date,
+        max_value=max_date,
+        key="comparison_dates",
+    )
     if isinstance(selected_dates, tuple) and len(selected_dates) == 2:
         start_date, end_date = selected_dates
     else:
@@ -243,6 +246,7 @@ def render_comparison(
         return
     period_start, period_end = closes.index[0], closes.index[-1]
     table = performance_table(stocks, period_start, period_end)
+    st.subheader("股票比較與進階分析")
     st.caption(
         f"實際比較區間：{period_start:%Y-%m-%d} ～ {period_end:%Y-%m-%d}，"
         f"共 {len(closes)} 個共同交易日。{PRICE_BASIS_NOTE}"

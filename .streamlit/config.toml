@@ -1,0 +1,10 @@
+[theme]
+base = "light"
+primaryColor = "#17181a"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f4f4f5"
+textColor = "#17181a"
+borderColor = "#e7e7e9"
+font = "Inter, 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans TC', sans-serif"
+baseRadius = "12px"
+buttonRadius = "full"

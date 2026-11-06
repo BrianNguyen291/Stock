@@ -43,6 +43,22 @@ OHLC_COLUMNS = ("open", "high", "low", "close")
 CJK_FONTS = ["Microsoft JhengHei", "PingFang TC", "Heiti TC", "Noto Sans CJK TC", "Arial Unicode MS"]
 matplotlib.rcParams["font.sans-serif"] = CJK_FONTS + list(matplotlib.rcParams["font.sans-serif"])
 matplotlib.rcParams["axes.unicode_minus"] = False
+matplotlib.rcParams.update({
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "axes.spines.left": False,
+    "axes.edgecolor": "#e7e7e9",
+    "axes.labelcolor": "#6f7177",
+    "axes.titlecolor": "#17181a",
+    "axes.titleweight": "normal",
+    "axes.titlelocation": "left",
+    "grid.color": "#e7e7e9",
+    "xtick.color": "#6f7177",
+    "ytick.color": "#6f7177",
+    "xtick.major.size": 0,
+    "ytick.major.size": 0,
+    "legend.frameon": False,
+})
 
 
 def _prepare(data: pd.DataFrame, columns) -> pd.DataFrame:
