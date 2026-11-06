@@ -46,6 +46,35 @@ PAGE_STYLE = f"""
 .st-key-market_shell > div, .st-key-account_shell > div {{ gap: 0; }}
 
 /* 頂部導覽 */
+/* 頂部導覽：三個選單水平置中 */
+/* 首頁導覽列相對於整個畫面置中 */
+.st-key-market_header {{
+    position: relative;
+}}
+
+.st-key-market_nav {{
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: max-content;
+    z-index: 5;
+}}
+
+.st-key-market_nav [data-testid="stHorizontalBlock"] {{
+    display: flex;
+    justify-content: center !important;
+    align-items: center;
+    gap: 1.5rem;
+}}
+
+@media (max-width: 700px) {{
+    .st-key-market_nav {{
+        position: static;
+        transform: none;
+        width: 100%;
+    }}
+}}
 .st-key-market_header {{
   position: relative; z-index: 3; padding: .8rem clamp(1rem, 3vw, 2.5rem);
   background: #000;
@@ -102,6 +131,18 @@ body:has(.st-key-market_profile) [data-testid="stPopoverBody"]:has(.profile-deta
 }}
 .profile-details p {{ color: var(--dim); margin: .2rem 0 0; font-size: .87rem; }}
 
+/* 首頁任意股票查詢（文字輸入，不是只能篩選既有選項的 selectbox） */
+.st-key-market_search [data-testid="stTextInput"] input {{
+  border-radius: 999px; min-height: 3.25rem; padding-inline: 1.3rem;
+  background: #141416; color: #f5f5f5; border: 1px solid #2a2a2e;
+}}
+.st-key-market_search [data-testid="stTextInput"] input:focus {{
+  border-color: #f2c14e; box-shadow: 0 0 0 1px #f2c14e;
+}}
+.st-key-market_search [data-testid="stFormSubmitButton"] button {{
+  border: 1px solid #f2c14e; background: #141416; min-height: 2.7rem;
+  color: #f5f5f5;
+}}
 /* Hero 與背景地圖 */
 .st-key-market_hero {{
   position: relative; isolation: isolate; overflow: hidden;
@@ -268,7 +309,7 @@ def _profile_details(identity):
 
 def _header(navigate, *, back=False):
     with st.container(key="market_header"):
-        brand, links, action = st.columns([1.4, 3.4, 1.2], vertical_alignment="center")
+        brand, links, action = st.columns([1, 2, 1], vertical_alignment="center")
         brand.html("""
         <div class="brand">
           <span class="brand-mark" aria-hidden="true">⌁</span>
@@ -277,7 +318,7 @@ def _header(navigate, *, back=False):
         """)
         if not back:
             with links.container(key="market_nav", horizontal=True):
-                for page, label in (("個股儀表板", "個股"), ("查詢股票", "查詢股票"), ("條件選股", "條件選股"), ("股票比較", "股票比較")):
+                for page, label in (("個股儀表板", "個股"), ("條件選股", "條件選股"), ("股票比較", "股票比較")):
                     st.button(label, on_click=navigate, args=(page,), key=f"market_nav_{page}")
         with action.container(key="market_action"):
             if back:
@@ -355,10 +396,42 @@ def _render_cards(quotes, navigate):
 
 
 def render_home(stock_labels, quotes, navigate):
-    def open_selected_stock():
-        selected = st.session_state.get("home_stock")
-        if selected:
-            navigate("個股儀表板", selected)
+    def search_and_open_stock(query: str) -> None:
+        """Only network-fetch after form submit, then open persisted dashboard data."""
+        from database import StockDatabase
+        from stock_lookup import fetch_and_store_stock, validate_stock_id
+
+        query = query.strip()
+        if not query:
+            st.warning("請輸入股票代號，例如 2330、2327、009816。")
+            return
+        try:
+            db = StockDatabase()
+            if not query.isdigit():
+                matched = [item for item in db.list_available_stocks()
+                           if item["stock_name"] == query or
+                           f'{item["stock_id"]} {item["stock_name"]}' == query]
+                if len(matched) != 1:
+                    raise ValueError("新股票請使用代號查詢；已收錄的股票可輸入完整中文名稱。")
+                query = matched[0]["stock_id"]
+            code = validate_stock_id(query)
+            with st.spinner(f"正在向 TWSE 取得 {code} 已公布交易資料並同步 SQLite…"):
+                result = fetch_and_store_stock(code, days=180)
+            if not result["source_rows"]:
+                st.error(result.get("warning") or "TWSE 沒有回傳此代號的有效交易資料，未新增到儀表板。")
+                return
+            stocks = [s for s in StockDatabase().list_available_stocks() if s["stock_id"] == code]
+            if not stocks:
+                raise RuntimeError("資料未出現在 SQLite，請檢查資料庫設定。")
+            label = f'{code} {stocks[0]["stock_name"]}'.strip()
+            st.session_state["twse_lookup_id"] = code
+            st.session_state["twse_lookup_days"] = 180
+            st.session_state["twse_lookup_result"] = result
+            st.session_state["home_search_notice"] = f'{label}：已從 TWSE 同步資料（新增 {result["inserted_rows"]} 筆）'
+            navigate("個股儀表板", label)
+            st.rerun()
+        except (ValueError, RuntimeError, OSError) as exc:
+            st.error(f"股票查詢失敗：{exc}")
 
     st.html(PAGE_STYLE)
     with st.container(key="market_shell"):
@@ -377,11 +450,15 @@ def render_home(stock_labels, quotes, navigate):
             </div>
             """)
             with st.container(key="market_search"):
-                st.selectbox(
-                    "搜尋股票", stock_labels, index=None, key="home_stock",
-                    placeholder="搜尋股票名稱或代號，例如台泥、1101",
-                    label_visibility="collapsed", on_change=open_selected_stock,
-                )
+                with st.form("market_home_twse_form", border=False):
+                    entered = st.text_input(
+                        "搜尋股票代號", key="home_twse_search",
+                        placeholder="輸入股票代號，例如 2330、2327、009816",
+                        label_visibility="collapsed", max_chars=20,
+                    )
+                    submitted = st.form_submit_button("查詢 TWSE 並加入儀表板", use_container_width=True)
+                if submitted:
+                    search_and_open_stock(entered)
                 shortcuts = [
                     label for code in ("1101", "2330", "2317")
                     for label in stock_labels if label.startswith(f"{code} ")

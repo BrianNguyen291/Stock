@@ -275,6 +275,20 @@ class StockDatabase:
             connection.execute("INSERT INTO update_logs(source, row_count) VALUES (?, ?)", (source, len(records)))
         return len(records)
 
+    def list_available_stocks(self) -> list[dict]:
+        """Stock options come from actual persisted daily_prices, not deployed CSVs."""
+        with self.connect() as connection:
+            rows = connection.execute("""
+                SELECT s.stock_id, s.stock_name, MAX(p.date) AS latest_date
+                FROM stocks s JOIN daily_prices p ON p.stock_id = s.stock_id
+                GROUP BY s.stock_id, s.stock_name
+                ORDER BY s.stock_id
+            """).fetchall()
+        return [
+            {"stock_id": row[0], "stock_name": row[1], "latest_date": row[2]}
+            for row in rows
+        ]
+
     def import_csv(self, path: str | Path, *, only_if_empty: bool = False) -> int:
         data = pd.read_csv(path, encoding="utf-8-sig", dtype={"stock_id": str})
         return self.upsert_prices(data, source=str(path), only_if_empty=only_if_empty)

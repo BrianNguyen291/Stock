@@ -10,13 +10,13 @@ import pytest
 from stock_lookup import validate_stock_id, date_window, export_table, excel_bytes
 import pandas as pd
 
-
 def test_validate_listed_stock_code():
     assert validate_stock_id(" 2330 ") == "2330"
+    assert validate_stock_id("009816") == "009816"
+
     for invalid in ("", "abc", "123", "12345", "../../", "２３３０"):
         with pytest.raises(ValueError):
             validate_stock_id(invalid)
-
 
 def test_window_is_bounded():
     start, end = date_window(90, date(2026, 11, 3))

@@ -3,6 +3,7 @@
 from datetime import date, timedelta
 from pathlib import Path
 import re
+import requests
 import sqlite3
 import tempfile
 from uuid import uuid4
@@ -57,6 +58,24 @@ def discover_stock_files(data_dir: Path = DATA_DIR) -> dict[str, Path]:
 
 STOCK_FILES = discover_stock_files()
 
+
+def refresh_stock_files() -> None:
+    """Include stocks inserted by manual TWSE lookup, even without a local CSV.
+
+    CSV-backed entries retain their existing import path and display label.
+    DB-only entries use a nonexisting path only as an ID-bearing handle; reads
+    always use SQLite and never try to create a CSV.
+    """
+    global STOCK_FILES
+    files = discover_stock_files()
+    known_ids = {path.stem for path in files.values()}
+    for stock in StockDatabase().list_available_stocks():
+        stock_id = stock["stock_id"]
+        if stock_id not in known_ids:
+            label = f"{stock_id} {stock['stock_name']}".strip()
+            files[label] = DATA_DIR / "data" / "raw" / f"{stock_id}.csv"
+    STOCK_FILES = files
+
 st.set_page_config(page_title="台股投資儀表板", page_icon="📈", layout="wide")
 
 
@@ -78,15 +97,17 @@ def taiwan_time(value: str | None) -> str:
 def read_stock_data(path: str) -> pd.DataFrame:
     """Seed each stock once; subsequent reads preserve database updates."""
     database = StockDatabase()
-    database.import_csv(path, only_if_empty=True)
+    if Path(path).is_file():
+        database.import_csv(path, only_if_empty=True)
     return database.query_prices(Path(path).stem)
 
 
 @st.cache_data(ttl=60, max_entries=128, show_spinner=False)
-def load_dashboard_data(path_text: str) -> tuple[pd.DataFrame, dict | None]:
+def load_dashboard_data(path_text: str, db_stamp: tuple[int, int] | None = None) -> tuple[pd.DataFrame, dict | None]:
     path = Path(path_text)
     database = StockDatabase()
-    database.import_csv(path, only_if_empty=True)
+    if path.is_file():
+        database.import_csv(path, only_if_empty=True)
     return database.query_prices(path.stem), database.latest_update(path)
 
 
@@ -95,7 +116,9 @@ def load_all_stocks() -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
     errors: dict[str, str] = {}
     for label, path in STOCK_FILES.items():
         try:
-            stocks[label], _ = load_dashboard_data(str(path))
+            db = StockDatabase()
+            stat = db.path.stat()
+            stocks[label], _ = load_dashboard_data(str(path), (stat.st_mtime_ns, stat.st_size))
         except (OSError, sqlite3.Error, ValueError, pd.errors.ParserError) as exc:
             errors[label] = str(exc)
     return stocks, errors
@@ -135,6 +158,14 @@ def update_all_stocks() -> tuple[list[str], dict[str, str]]:
     end = date.today()
     for label, path in STOCK_FILES.items():
         stock_id = path.stem
+        if not path.is_file():
+            try:
+                from stock_lookup import fetch_and_store_stock
+                fetch_and_store_stock(stock_id, days=90)
+                updated.append(label)
+            except (OSError, ValueError, RuntimeError, requests.RequestException) as exc:
+                errors[label] = str(exc)
+            continue
         temporary_path = None
         try:
             # 首次匯入抓一年；已有資料只抓最近兩個月，避免每次更新重抓完整歷史。
@@ -581,6 +612,7 @@ def render_dashboard_toolbar(page: str):
 
 
 def main() -> None:
+    refresh_stock_files()
     page = st.session_state.get("active_page", "首頁")
     if page == "首頁":
         render_home(list(STOCK_FILES), load_home_quotes(), navigate)
