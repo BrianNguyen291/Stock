@@ -52,16 +52,7 @@ Google Cloud 設定一致，例如測試站使用
 設定完成後，從側邊欄登入及登出。訪客仍可瀏覽公開行情。
 詳見 [Streamlit Google 登入設定](https://docs.streamlit.io/develop/tutorials/authentication/google)。
 
-若只想試用本機登入，可指定僅在本機監聽的位址並開啟測試模式。
-測試帳號為 `test`，密碼為 `1234`。
-
-```sh
-STOCK_ENABLE_TEST_LOGIN=1 streamlit run app.py --server.address 127.0.0.1
-```
-
-PowerShell 可先執行 `$env:STOCK_ENABLE_TEST_LOGIN = "1"`，
-再執行 `streamlit run app.py --server.address 127.0.0.1`。
-這個帳號只在明確開啟模式且伺服器綁定本機位址時可用，Azure 會停用。
+課程展示期間提供共用測試帳號（帳號 `test`、密碼 `1234`），所有環境（含 Azure 正式站）預設可登入。帳號密碼是公開的，任何人都能登入並共用同一份個人資料，不要存放真實資料。展示結束後請在環境變數設定 `STOCK_ENABLE_TEST_LOGIN=0` 關閉。
 
 B、C 的個人頁面可用 `auth.current_user_id()` 取得目前工作階段的使用者 ID。
 回傳 `None` 時請停止個人資料操作。每次執行都應從目前工作階段取得 ID，

@@ -256,7 +256,7 @@ def _direction(change):
 
 def _profile_details(identity):
     local_test = identity.provider == "local_test"
-    provider = "本機測試帳號" if local_test else "Google 帳號"
+    provider = "測試帳號" if local_test else "Google 帳號"
     name = escape(identity.display_name or provider)
     identifier = escape(identity.subject if local_test else identity.email or "")
     st.html(

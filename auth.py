@@ -20,12 +20,9 @@ class Identity:
     display_name: str | None = None
 
 
-def _local_test_enabled() -> bool:
-    return (
-        os.environ.get("STOCK_ENABLE_TEST_LOGIN") == "1"
-        and not os.environ.get("WEBSITE_SITE_NAME")
-        and st.get_option("server.address") in ("localhost", "127.0.0.1", "::1")
-    )
+def _test_login_enabled() -> bool:
+    """課程展示用的共用測試帳號，所有環境預設開放；設 STOCK_ENABLE_TEST_LOGIN=0 可關閉。"""
+    return os.environ.get("STOCK_ENABLE_TEST_LOGIN") != "0"
 
 
 def current_identity() -> Identity | None:
@@ -39,7 +36,7 @@ def current_identity() -> Identity | None:
         return Identity(
             "google", subject, email=user.get("email"), display_name=user.get("name")
         )
-    if _local_test_enabled() and st.session_state.get(TEST_SESSION_KEY):
+    if _test_login_enabled() and st.session_state.get(TEST_SESSION_KEY):
         return Identity("local_test", "test", display_name="測試帳號")
     return None
 
@@ -57,7 +54,7 @@ def current_user_id() -> int | None:
 
 def _render_test_login(on_success) -> None:
     with st.form("local_test_login", clear_on_submit=True):
-        st.caption("本機測試登入")
+        st.caption("測試帳號登入")
         username = st.text_input("帳號")
         password = st.text_input("密碼", type="password")
         submitted = st.form_submit_button("登入測試帳號")
@@ -101,14 +98,14 @@ def render_logout() -> None:
 def render_auth(on_success=None) -> None:
     """在目前的容器顯示登入狀態，訪客仍可使用公開行情功能。"""
     google_logged_in = bool(st.user.get("is_logged_in"))
-    local_test = _local_test_enabled()
-    test_logged_in = local_test and st.session_state.get(TEST_SESSION_KEY, False)
+    test_login = _test_login_enabled()
+    test_logged_in = test_login and st.session_state.get(TEST_SESSION_KEY, False)
     if not google_logged_in and not test_logged_in:
         if _google_is_configured():
             st.button("使用 Google 登入", on_click=st.login, args=("google",))
-        elif not local_test:
+        elif not test_login:
             st.caption("Google 登入尚未設定")
-        if local_test:
+        if test_login:
             _render_test_login(on_success)
         return
 

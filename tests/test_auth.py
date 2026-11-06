@@ -1,6 +1,5 @@
 from unittest.mock import Mock
 
-import pytest
 from streamlit.testing.v1 import AppTest
 
 import auth
@@ -57,6 +56,7 @@ def test_incomplete_or_non_google_identity_has_no_user_id(monkeypatch):
 
 
 def test_guest_can_use_sidebar_before_google_is_configured(monkeypatch):
+    monkeypatch.setenv("STOCK_ENABLE_TEST_LOGIN", "0")
     monkeypatch.setattr(auth.st, "user", {})
     monkeypatch.setattr(auth.st, "secrets", {})
     app = AppTest.from_string("from auth import render_auth\nrender_auth()").run()
@@ -64,10 +64,10 @@ def test_guest_can_use_sidebar_before_google_is_configured(monkeypatch):
     assert app.caption[0].value == "Google 登入尚未設定"
 
 
-def test_local_test_login_rejects_wrong_password_and_logs_out(monkeypatch, tmp_path):
+def test_test_login_rejects_wrong_password_and_logs_out(monkeypatch, tmp_path):
     monkeypatch.setattr(auth.st, "user", {})
     monkeypatch.setattr(auth.st, "secrets", {})
-    monkeypatch.setattr(auth, "_local_test_enabled", lambda: True)
+    monkeypatch.delenv("STOCK_ENABLE_TEST_LOGIN", raising=False)
     monkeypatch.setenv("STOCK_DB_PATH", str(tmp_path / "local.sqlite3"))
     app = AppTest.from_string("from auth import render_auth\nrender_auth()").run()
     app.text_input[0].set_value("test")
@@ -83,12 +83,12 @@ def test_local_test_login_rejects_wrong_password_and_logs_out(monkeypatch, tmp_p
     assert app.button[0].label == "登入測試帳號"
 
 
-@pytest.mark.parametrize("address,azure", [("0.0.0.0", False), ("127.0.0.1", True)])
-def test_test_login_stays_disabled_on_public_or_azure_server(monkeypatch, address, azure):
-    monkeypatch.setenv("STOCK_ENABLE_TEST_LOGIN", "1")
-    if azure:
-        monkeypatch.setenv("WEBSITE_SITE_NAME", "stock")
-    else:
-        monkeypatch.delenv("WEBSITE_SITE_NAME", raising=False)
-    monkeypatch.setattr(auth.st, "get_option", lambda _: address)
-    assert not auth._local_test_enabled()
+def test_test_login_is_on_by_default_including_azure(monkeypatch):
+    monkeypatch.delenv("STOCK_ENABLE_TEST_LOGIN", raising=False)
+    monkeypatch.setenv("WEBSITE_SITE_NAME", "stock")
+    assert auth._test_login_enabled()
+
+
+def test_test_login_can_be_turned_off(monkeypatch):
+    monkeypatch.setenv("STOCK_ENABLE_TEST_LOGIN", "0")
+    assert not auth._test_login_enabled()
