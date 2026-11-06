@@ -72,6 +72,56 @@ jobs:
             exit 1
           fi
 
+      
+      - name: Verify Azure WebJob schedule environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Azure WebJob schedule configuration ==="
+
+          timezone=$(az webapp config appsettings list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query "[?name=='WEBSITE_TIME_ZONE'].value | [0]" \
+            --output tsv)
+
+          always_on=$(az webapp config show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query alwaysOn \
+            --output tsv)
+
+          schedule_disabled=$(az webapp config appsettings list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query "[?name=='WEBJOBS_DISABLE_SCHEDULE'].value | [0]" \
+            --output tsv)
+
+          echo "WEBSITE_TIME_ZONE: ${timezone:-not configured}"
+          echo "Always On: $always_on"
+          echo "WEBJOBS_DISABLE_SCHEDULE: $schedule_disabled"
+
+          if [[ -z "$timezone" || "$timezone" == "None" || "$timezone" == "UTC" ]]; then
+            echo "Schedule interpretation: UTC"
+            echo "Current 09:30 UTC schedule = 17:30 Asia/Taipei"
+          else
+            echo "CHECK REQUIRED: Schedule uses configured timezone."
+          fi
+
+          if [[ "${always_on,,}" != "true" ]]; then
+            echo "WARNING: Always On is not enabled."
+          fi
+
+          if [[ "$schedule_disabled" == "1" ]]; then
+            echo "Schedule remains disabled for safe testing."
+          else
+            echo "WARNING: Automatic schedule is not disabled."
+          fi
+    
       - name: Inspect test-slot deployment history
         run: az webapp log deployment list --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_WEBAPP_NAME" --slot test --output json
 
