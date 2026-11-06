@@ -1,3 +1,4 @@
+
 name: Deploy Stock to Azure test slot
 
 on:
@@ -11,6 +12,15 @@ on:
         default: false
       verify_persistence:
         description: 'Verify test-slot SQLite persistence across restart and redeploy'
+        type: boolean
+        default: false
+      
+      run_stock_webjob:
+        description: 'Manually run stock-update WebJob in Azure test slot'
+        type: boolean
+        default: false
+      confirm_test_db_write:
+        description: 'I confirm that updating the test SQLite is allowed'
         type: boolean
         default: false
 
@@ -33,17 +43,206 @@ jobs:
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Verify shared SQLite database path
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Azure test slot SQLite configuration ==="
+
+          db_path=$(az webapp config appsettings list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query "[?name=='STOCK_DB_PATH'].value | [0]" \
+            --output tsv)
+
+          expected='C:\home\data\stock\test.sqlite3'
+
+          if [[ -z "$db_path" || "$db_path" == "None" ]]; then
+            echo "RESULT: STOCK_DB_PATH is not explicitly configured."
+            exit 1
+          fi
+
+          if [[ "${db_path,,}" == "${expected,,}" ]]; then
+            echo "SUCCESS: Dashboard and WebJob are configured to use test.sqlite3"
+          else
+            echo "ERROR: STOCK_DB_PATH differs from the expected test database."
+            exit 1
+          fi
+
+      
+      - name: Verify Azure WebJob schedule environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Azure WebJob schedule configuration ==="
+
+          timezone=$(az webapp config appsettings list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query "[?name=='WEBSITE_TIME_ZONE'].value | [0]" \
+            --output tsv)
+
+          always_on=$(az webapp config show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query alwaysOn \
+            --output tsv)
+
+          schedule_disabled=$(az webapp config appsettings list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query "[?name=='WEBJOBS_DISABLE_SCHEDULE'].value | [0]" \
+            --output tsv)
+
+          echo "WEBSITE_TIME_ZONE: ${timezone:-not configured}"
+          echo "Always On: $always_on"
+          echo "WEBJOBS_DISABLE_SCHEDULE: $schedule_disabled"
+
+          if [[ -z "$timezone" || "$timezone" == "None" || "$timezone" == "UTC" ]]; then
+            echo "Schedule interpretation: UTC"
+            echo "Current 09:30 UTC schedule = 17:30 Asia/Taipei"
+          else
+            echo "CHECK REQUIRED: Schedule uses configured timezone."
+          fi
+
+          if [[ "${always_on,,}" != "true" ]]; then
+            echo "WARNING: Always On is not enabled."
+          fi
+
+          if [[ "$schedule_disabled" == "1" ]]; then
+            echo "Schedule remains disabled for safe testing."
+          else
+            echo "WARNING: Automatic schedule is not disabled."
+          fi
+    
       - name: Inspect test-slot deployment history
         run: az webapp log deployment list --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_WEBAPP_NAME" --slot test --output json
+
       - name: Inspect latest test-slot deployment logs
         run: az webapp log deployment show --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_WEBAPP_NAME" --slot test --output json
+
+      
+      - name: Check stock-update WebJob on Azure test slot
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking Azure test slot WebJobs..."
+
+          az webapp webjob triggered list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --output table
+
+          job_names=$(az webapp webjob triggered list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query "[].name" \
+            --output tsv)
+
+          if ! printf '%s\n' "$job_names" | grep -Eq '(^|/)stock-update$'; then
+            echo "ERROR: stock-update WebJob not found"
+            exit 1
+          fi
+
+          echo "SUCCESS: stock-update is registered"
+      
+      - name: Inspect latest stock-update execution
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Latest WebJob execution ==="
+
+          az webapp webjob triggered list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query "[?contains(name, 'stock-update')].{Name:name,Status:latestRun.status,Start:latestRun.startTime,End:latestRun.endTime,Output:latestRun.outputUrl}" \
+            --output json
+
+          echo "=== WebJob execution history ==="
+
+          az webapp webjob triggered log \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --webjob-name stock-update \
+            --output json
+      
+      - name: Read latest stock-update output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Locate latest Azure WebJob output ==="
+          output_url=$(az webapp webjob triggered list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query "[?contains(name, 'stock-update')].latestRun.outputUrl | [0]" \
+            --output tsv)
+
+          if [[ -z "$output_url" || "$output_url" == "None" ]]; then
+            echo "ERROR: No output URL was returned by Azure."
+            exit 1
+          fi
+
+          # Avoid sending publishing credentials to any unexpected host.
+          case "$output_url" in
+            "https://${AZURE_WEBAPP_NAME}-test.scm.azurewebsites.net/vfs/data/jobs/triggered/stock-update/"* | \
+            "https://${AZURE_WEBAPP_NAME}-test.scm.azurewebsites.net:443/vfs/data/jobs/triggered/stock-update/"*) ;;
+            *) echo "ERROR: Unexpected WebJob output URL host or path."; exit 1 ;;
+          esac
+
+          echo "=== Read test-slot SCM publishing credentials ==="
+          username=$(az webapp deployment list-publishing-credentials \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test --query publishingUserName --output tsv)
+          password=$(az webapp deployment list-publishing-credentials \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test --query publishingPassword --output tsv)
+          if [[ -z "$username" || -z "$password" || "$username" == "None" || "$password" == "None" ]]; then
+            echo "ERROR: SCM publishing credentials are unavailable."
+            exit 1
+          fi
+          echo "::add-mask::$username"
+          echo "::add-mask::$password"
+
+          log_file="$RUNNER_TEMP/stock-update-output.txt"
+          http_status=$(curl --silent --show-error \
+            --connect-timeout 10 --max-time 45 \
+            --user "$username:$password" \
+            --output "$log_file" --write-out "%{http_code}" \
+            "$output_url")
+          if [[ "$http_status" != "200" ]]; then
+            echo "ERROR: SCM output retrieval failed with HTTP $http_status."
+            echo "SCM basic authentication may be disabled or restricted. Do not enable it without administrator approval."
+            exit 1
+          fi
+
+          echo "=== WebJob output (last 80 lines; review before sharing) ==="
+          tail -n 80 "$log_file"
+
   deploy:
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.diagnostics_only) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && (inputs.diagnostics_only || inputs.run_stock_webjob)) }}
     runs-on: windows-latest
     env:
       AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
       AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       PYTHON_RUNTIME_VERSION: 3.14.8
+
     steps:
       - uses: actions/checkout@v4
 
@@ -62,11 +261,31 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force dist\runtime | Out-Null
+
+          # Package application, stock data and scheduled update scripts
           New-Item -ItemType Directory -Force dist\data\raw | Out-Null
           Copy-Item -Recurse .streamlit dist\
-          Copy-Item app.py, auth.py, home.py, market_map.py, charts.py, comparison.py, crawler.py, data_processor.py, database.py, serve.py, web.config dist\
+          Copy-Item app.py, auth.py, home.py, market_map.py, charts.py, comparison.py, crawler.py, data_processor.py, database.py, stock_lookup.py, serve.py, web.config, update_data.py, stocks.json dist\
+
+          if (!(Test-Path "dist\stock_lookup.py")) {
+              throw "Missing stock_lookup.py in deployment package"
+          }
           Copy-Item *.csv dist\
           Copy-Item data\raw\*.csv dist\data\raw\
+
+          # Package scheduled Azure WebJob for test slot
+          $jobDir = "dist\App_Data\jobs\triggered\stock-update"
+          New-Item -ItemType Directory -Force $jobDir | Out-Null
+          Copy-Item "webjobs\stock-update\run.cmd" $jobDir
+          Copy-Item "webjobs\stock-update\settings.job" $jobDir
+
+          if (!(Test-Path "$jobDir\run.cmd")) {
+            throw "WebJob run.cmd missing"
+          }
+          if (!(Test-Path "$jobDir\settings.job")) {
+            throw "WebJob settings.job missing"
+          }
+
           python -m pip install --target dist\site-packages -r requirements.txt
           if ($LASTEXITCODE -ne 0) { throw 'Dependency packaging failed' }
 
@@ -77,6 +296,7 @@ jobs:
           if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash -ne $expectedHash) {
             throw 'Python runtime archive checksum mismatch'
           }
+
           Expand-Archive -LiteralPath $archive -DestinationPath dist\runtime
           Set-Content -Path dist\runtime\python314._pth -Value @('python314.zip', '.', '..', '..\site-packages', 'import site')
           & .\dist\runtime\python.exe -c 'import streamlit, matplotlib, app, serve'
@@ -89,15 +309,29 @@ jobs:
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      
+      - name: Configure stock WebJob on test slot
+        shell: pwsh
+        run: |
+          az webapp config appsettings set `
+            --resource-group $env:AZURE_RESOURCE_GROUP `
+            --name $env:AZURE_WEBAPP_NAME `
+            --slot test `
+            --slot-settings WEBJOBS_DISABLE_SCHEDULE=1 STOCK_WEBJOB_ALLOWED_SLOT=test `
+            --output none
+
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to configure stock WebJob on test slot'
+          }
 
       - name: Verify Windows Web App test slot
         shell: pwsh
         run: |
           $platform = az webapp show --resource-group $env:AZURE_RESOURCE_GROUP --name $env:AZURE_WEBAPP_NAME --slot test --query reserved --output tsv
-          if ($LASTEXITCODE -ne 0) { throw 'Azure Web App test slot lookup failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'Azure Web App lookup failed' }
           if ($platform.Trim().ToLowerInvariant() -ne 'false') { throw 'Target must be a Windows Azure Web App' }
 
-      # Streamlit 透過 WebSocket 與瀏覽器溝通，Web App 必須開啟 Web sockets。
       - name: Enable Web sockets on test slot
         shell: pwsh
         run: |
@@ -136,3 +370,87 @@ jobs:
           name: sqlite-persistence-${{ github.run_id }}
           path: persistence-evidence/
           if-no-files-found: warn
+ 
+  verify_stock_webjob:
+    name: Manually verify stock-update WebJob
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_stock_webjob && !inputs.diagnostics_only }}
+    runs-on: ubuntu-latest
+
+    env:
+      AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+
+    steps:
+      - name: Confirm test database write permission
+        shell: bash
+        env:
+          CONFIRMED: ${{ inputs.confirm_test_db_write }}
+        run: |
+          if [ "$CONFIRMED" != "true" ]; then
+            echo "ERROR: Test database write was not confirmed."
+            exit 1
+          fi
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Verify test slot safety settings
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          schedule_disabled=$(az webapp config appsettings list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query "[?name=='WEBJOBS_DISABLE_SCHEDULE'].value | [0]" \
+            --output tsv)
+
+          if [ "$schedule_disabled" != "1" ]; then
+            echo "ERROR: Automatic schedule is not disabled."
+            exit 1
+          fi
+
+          job_names=$(az webapp webjob triggered list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --query "[].name" \
+            --output tsv)
+
+          if ! printf '%s\n' "$job_names" | grep -Eq '(^|/)stock-update$'; then
+            echo "ERROR: stock-update WebJob not found."
+            exit 1
+          fi
+
+          echo "SUCCESS: Test slot safety checks passed."
+
+      - name: Manually trigger stock-update
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Starting stock-update on Azure TEST slot..."
+
+          az webapp webjob triggered run \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --webjob-name stock-update \
+            --output json
+
+          echo "WebJob trigger request completed."
+
+      - name: Retrieve WebJob execution history
+        if: ${{ always() && inputs.confirm_test_db_write }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          az webapp webjob triggered log \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --slot test \
+            --webjob-name stock-update \
+            --output json

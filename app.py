@@ -16,11 +16,12 @@ from comparison import render_comparison
 from crawler import crawl
 from database import StockDatabase
 from home import DESIGN_TOKENS, render_home, render_login
+from stock_lookup import render_stock_lookup
 
 
 DATA_DIR = Path(__file__).parent
 STOCK_FILE_PATTERN = re.compile(r"\d{4,6}")
-DASHBOARD_PAGES = ["個股儀表板", "條件選股", "股票比較"]
+DASHBOARD_PAGES = ["個股儀表板", "查詢股票", "條件選股", "股票比較"]
 DASHBOARD_STOCK_PAGE = DASHBOARD_PAGES[0]
 ANALYSIS_PANEL_HEIGHT = 416
 ANALYSIS_PANELS = {
@@ -81,7 +82,7 @@ def read_stock_data(path: str) -> pd.DataFrame:
     return database.query_prices(Path(path).stem)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(ttl=60, max_entries=128, show_spinner=False)
 def load_dashboard_data(path_text: str) -> tuple[pd.DataFrame, dict | None]:
     path = Path(path_text)
     database = StockDatabase()
@@ -543,7 +544,7 @@ def render_dashboard_toolbar(page: str):
 
     date_slot = None
     with st.container(key="dashboard_toolbar"):
-        if page == "條件選股":
+        if page in ("條件選股", "查詢股票"):
             menu, search, navigation = st.columns([1, 3, 6], vertical_alignment="center")
         else:
             menu, search, dates, navigation = st.columns([1, 3, .55, 5.45], vertical_alignment="center")
@@ -592,14 +593,15 @@ def main() -> None:
     scroll_to_top(st.session_state.pop("scroll_to_top", False))
     stock_label, date_slot = render_dashboard_toolbar(page)
     stocks, errors = load_all_stocks()
-    if page == "股票比較":
+    if page == "查詢股票":
+        render_stock_lookup()
+    elif page == "股票比較":
         render_comparison(STOCK_FILES, read_stock_data, date_slot=date_slot)
     elif page == "條件選股":
         render_stock_picker(stocks)
     else:
         render_single_stock(stocks, stock_label, date_slot)
     render_status(stocks, errors)
-
 
 if __name__ == "__main__":
     main()

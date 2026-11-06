@@ -277,7 +277,7 @@ def _header(navigate, *, back=False):
         """)
         if not back:
             with links.container(key="market_nav", horizontal=True):
-                for page, label in (("個股儀表板", "個股"), ("條件選股", "條件選股"), ("股票比較", "股票比較")):
+                for page, label in (("個股儀表板", "個股"), ("查詢股票", "查詢股票"), ("條件選股", "條件選股"), ("股票比較", "股票比較")):
                     st.button(label, on_click=navigate, args=(page,), key=f"market_nav_{page}")
         with action.container(key="market_action"):
             if back:

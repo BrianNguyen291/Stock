@@ -11,3 +11,18 @@ data/
 *.sqlite3
 *.sqlite3-journal
 .DS_Store
+# Runtime logs
+logs/
+
+# Temporary update data
+data/pending/
+data/test_holiday/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local SQLite databases
+*.db
+*.sqlite
+*.sqlite3
