@@ -129,6 +129,36 @@ class StockDatabase:
                     source TEXT NOT NULL,
                     row_count INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY,
+                    provider TEXT NOT NULL CHECK(provider IN ('google', 'local_test')),
+                    subject TEXT NOT NULL,
+                    email TEXT,
+                    display_name TEXT,
+                    UNIQUE (provider, subject)
+                );
+                CREATE TABLE IF NOT EXISTS watchlists (
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    stock_id TEXT NOT NULL,
+                    PRIMARY KEY (user_id, stock_id)
+                );
+                CREATE TABLE IF NOT EXISTS holdings (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    stock_id TEXT NOT NULL,
+                    purchase_price REAL NOT NULL CHECK(purchase_price > 0),
+                    shares INTEGER NOT NULL CHECK(shares > 0),
+                    purchase_date TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS holdings_by_user ON holdings(user_id);
+                CREATE TABLE IF NOT EXISTS alerts (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    stock_id TEXT NOT NULL,
+                    kind TEXT NOT NULL CHECK(kind IN ('price_above', 'price_below', 'volume_above')),
+                    threshold REAL NOT NULL CHECK(threshold > 0)
+                );
+                CREATE INDEX IF NOT EXISTS alerts_by_user ON alerts(user_id);
             """)
 
     @contextmanager
@@ -141,6 +171,79 @@ class StockDatabase:
                 yield connection
         finally:
             connection.close()
+
+    def upsert_user(
+        self, provider: str, subject: str, *, email: str | None = None, display_name: str | None = None
+    ) -> int:
+        """Register an authenticated identity and return its stable local ID."""
+        if not isinstance(subject, str) or not subject.strip():
+            raise ValueError("缺少帳號識別碼")
+        with self.connect() as connection:
+            connection.execute("""
+                INSERT INTO users(provider, subject, email, display_name) VALUES (?, ?, ?, ?)
+                ON CONFLICT(provider, subject) DO UPDATE SET
+                    email=excluded.email, display_name=excluded.display_name
+                WHERE users.email IS NOT excluded.email
+                   OR users.display_name IS NOT excluded.display_name
+            """, (provider, subject, email, display_name))
+            return connection.execute(
+                "SELECT id FROM users WHERE provider = ? AND subject = ?", (provider, subject)
+            ).fetchone()[0]
+
+    # Personal data methods take the authenticated server-side ID from auth.current_user_id().
+    def add_to_watchlist(self, user_id: int, stock_id: str) -> bool:
+        with self.connect() as connection:
+            result = connection.execute("""
+                INSERT INTO watchlists(user_id, stock_id) VALUES (?, ?)
+                ON CONFLICT(user_id, stock_id) DO NOTHING
+            """, (user_id, _stock_id(stock_id)))
+            return result.rowcount == 1
+
+    def remove_from_watchlist(self, user_id: int, stock_id: str) -> bool:
+        with self.connect() as connection:
+            result = connection.execute(
+                "DELETE FROM watchlists WHERE user_id = ? AND stock_id = ?",
+                (user_id, _stock_id(stock_id)),
+            )
+            return result.rowcount == 1
+
+    def list_watchlist(self, user_id: int) -> list[str]:
+        with self.connect() as connection:
+            return [row[0] for row in connection.execute(
+                "SELECT stock_id FROM watchlists WHERE user_id = ? ORDER BY stock_id",
+                (user_id,),
+            )]
+
+    def add_holding(
+        self, user_id: int, stock_id: str, *, purchase_price: float, shares: int,
+        purchase_date: date | str,
+    ) -> int:
+        if isinstance(purchase_price, bool) or not math.isfinite(purchase_price) or purchase_price <= 0:
+            raise ValueError("買進價必須是有限的正數")
+        if type(shares) is not int or not 0 < shares <= 2**63 - 1:
+            raise ValueError("股數必須是正整數")
+        with self.connect() as connection:
+            result = connection.execute("""
+                INSERT INTO holdings(user_id, stock_id, purchase_price, shares, purchase_date)
+                VALUES (?, ?, ?, ?, ?)
+            """, (user_id, _stock_id(stock_id), purchase_price, shares, _date(purchase_date)))
+            return result.lastrowid
+
+    def remove_holding(self, user_id: int, holding_id: int) -> bool:
+        with self.connect() as connection:
+            result = connection.execute(
+                "DELETE FROM holdings WHERE user_id = ? AND id = ?", (user_id, holding_id)
+            )
+            return result.rowcount == 1
+
+    def list_holdings(self, user_id: int) -> list[dict]:
+        with self.connect() as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute("""
+                SELECT id, stock_id, purchase_price, shares, purchase_date
+                FROM holdings WHERE user_id = ? ORDER BY purchase_date, id
+            """, (user_id,))
+            return [dict(row) for row in rows]
 
     def upsert_prices(self, data: pd.DataFrame, source: str = "api", *, only_if_empty: bool = False) -> int:
         """先驗證整批，再以單一交易寫入股票、股價及成功紀錄。"""

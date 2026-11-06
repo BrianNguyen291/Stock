@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 .venv/
 .env
+/.streamlit/secrets.toml
 data/
 *.csv
 # 根目錄的 <股票代號>.csv 是 app 的種子資料，需要部署。

@@ -26,6 +26,53 @@ streamlit run app.py
 SQLite、清除 Streamlit 快取並重新查詢；個別股票抓取失敗時會保留既有資料並在狀態卡片
 顯示失敗原因。
 
+## Google 登入與個人資料（#26）
+
+在 Google Cloud 建立「網頁應用程式」OAuth 用戶端，將
+`http://localhost:8501/oauth2callback` 加入已授權的重新導向 URI。
+在專案建立 `.streamlit/secrets.toml` 並填入設定：
+
+```toml
+[auth]
+redirect_uri = "http://localhost:8501/oauth2callback"
+cookie_secret = "替換成隨機產生的長密鑰"
+
+[auth.google]
+client_id = "替換成 Google OAuth client ID"
+client_secret = "替換成 Google OAuth client secret"
+server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
+```
+
+Cookie 密鑰可用 `python -c "import secrets; print(secrets.token_urlsafe(32))"`
+產生。實際密鑰請留在 secrets 檔，這個檔案已排除於版控。Azure 可將檔案放在
+`%HOME%\data\stock\auth\secrets.toml`，並在各 slot 的
+`STREAMLIT_SECRETS_FILES` 設定其絕對路徑。各環境的 `redirect_uri` 須與
+Google Cloud 設定一致，例如測試站使用
+`https://ntustwebtest07-test.azurewebsites.net/oauth2callback`。
+設定完成後，從側邊欄登入及登出。訪客仍可瀏覽公開行情。
+詳見 [Streamlit Google 登入設定](https://docs.streamlit.io/develop/tutorials/authentication/google)。
+
+若只想試用本機登入，可指定僅在本機監聽的位址並開啟測試模式。
+測試帳號為 `test`，密碼為 `1234`。
+
+```sh
+STOCK_ENABLE_TEST_LOGIN=1 streamlit run app.py --server.address 127.0.0.1
+```
+
+PowerShell 可先執行 `$env:STOCK_ENABLE_TEST_LOGIN = "1"`，
+再執行 `streamlit run app.py --server.address 127.0.0.1`。
+這個帳號只在明確開啟模式且伺服器綁定本機位址時可用，Azure 會停用。
+
+B、C 的個人頁面可用 `auth.current_user_id()` 取得目前工作階段的使用者 ID。
+回傳 `None` 時請停止個人資料操作。每次執行都應從目前工作階段取得 ID，
+並將它傳給 `StockDatabase` 的個人資料方法。使用者 ID 不應由表單或網址參數提供。
+
+- 最愛使用 `add_to_watchlist(user_id, stock_id)`、`remove_from_watchlist(user_id, stock_id)` 與 `list_watchlist(user_id)`。
+- 持股使用 `add_holding(user_id, stock_id, purchase_price=..., shares=..., purchase_date=...)`、
+  `remove_holding(user_id, holding_id)` 與 `list_holdings(user_id)`。每筆買進有獨立 ID，
+  `shares` 單位為股，買進日可用 `date` 或 ISO 日期字串。
+- 提醒表預留 `price_above`、`price_below` 與 `volume_above` 三種條件。價格門檻以元計，成交量門檻以股計。
+
 ## SQLite 與技術指標（#9）
 
 儀表板改從 SQLite 查詢。首次讀取某支股票時會匯入隨附 CSV，之後不會用舊 CSV 覆蓋資料庫中的更新。若要主動新增或更新 CSV 資料，可執行：

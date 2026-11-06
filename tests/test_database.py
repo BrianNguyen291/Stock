@@ -30,6 +30,58 @@ def prices(stock_id="2327", count=65):
     })
 
 
+def test_google_user_identity_survives_profile_changes(database):
+    user = database.upsert_user("google", "subject-a", email="old@example.com")
+    assert database.upsert_user("google", "subject-a", email="new@example.com") == user
+    assert database.upsert_user("google", "subject-b", email="new@example.com") != user
+
+
+def test_watchlists_are_isolated_between_accounts(database):
+    a = database.upsert_user("google", "subject-a")
+    b = database.upsert_user("google", "subject-b")
+
+    assert database.add_to_watchlist(a, "2327")
+    assert not database.add_to_watchlist(a, "2327")
+    assert database.add_to_watchlist(b, "2492")
+    assert database.list_watchlist(a) == ["2327"]
+    assert database.list_watchlist(b) == ["2492"]
+    assert not database.remove_from_watchlist(a, "2492")
+    assert not database.remove_from_watchlist(b, "2327")
+
+    assert database.add_to_watchlist(b, "2327")
+    assert database.remove_from_watchlist(a, "2327")
+    assert database.list_watchlist(a) == []
+    assert database.list_watchlist(b) == ["2327", "2492"]
+
+
+def test_holdings_are_isolated_even_when_both_accounts_own_same_stock(database):
+    a = database.upsert_user("google", "subject-a")
+    b = database.upsert_user("google", "subject-b")
+    lot_a = database.add_holding(a, "2327", purchase_price=100, shares=1000, purchase_date="2026-01-02")
+    lot_b = database.add_holding(b, "2327", purchase_price=200, shares=2000, purchase_date="2026-01-05")
+
+    assert database.list_holdings(a) == [
+        {"id": lot_a, "stock_id": "2327", "purchase_price": 100, "shares": 1000, "purchase_date": "2026-01-02"}
+    ]
+    assert [lot["id"] for lot in database.list_holdings(b)] == [lot_b]
+    assert not database.remove_holding(a, lot_b)
+    assert not database.remove_holding(b, lot_a)
+    assert database.remove_holding(a, lot_a)
+    assert database.list_holdings(a) == []
+    assert [lot["id"] for lot in database.list_holdings(b)] == [lot_b]
+
+
+def test_personal_tables_require_a_registered_owner(database):
+    with pytest.raises(sqlite3.IntegrityError):
+        database.add_to_watchlist(999, "2327")
+    with pytest.raises(sqlite3.IntegrityError):
+        database.add_holding(999, "2327", purchase_price=100, shares=1000, purchase_date="2026-01-02")
+    with pytest.raises(sqlite3.IntegrityError), database.connect() as connection:
+        connection.execute(
+            "INSERT INTO alerts(user_id, stock_id, kind, threshold) VALUES (999, '2327', 'price_above', 100)"
+        )
+
+
 def test_import_bundled_csv_is_idempotent_and_matches_all_rows(database):
     for filename in ("2327.csv", "2492.csv"):
         path = ROOT / filename
