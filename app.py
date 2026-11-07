@@ -12,7 +12,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from charts import INDICATORS, MA_WINDOWS, PERIODS, interactive_chart, recent_period, volume_chart
+from charts import MA_WINDOWS, TRADINGVIEW_HEIGHT, tradingview_chart, volume_chart
 from comparison import render_comparison
 from crawler import crawl
 from database import StockDatabase
@@ -25,11 +25,6 @@ STOCK_FILE_PATTERN = re.compile(r"\d{4,6}")
 DASHBOARD_PAGES = ["個股儀表板", "查詢股票", "條件選股", "股票比較"]
 DASHBOARD_STOCK_PAGE = DASHBOARD_PAGES[0]
 ANALYSIS_PANEL_HEIGHT = 416
-ANALYSIS_PANELS = {
-    "收盤價走勢": ":material/show_chart:",
-    "成交量走勢": ":material/bar_chart:",
-    "交易資料": ":material/table_rows:",
-}
 
 
 def discover_stock_files(data_dir: Path = DATA_DIR) -> dict[str, Path]:
@@ -210,7 +205,7 @@ def inject_styles() -> None:
         .block-container {{padding: 1rem clamp(1rem, 3vw, 2.5rem) 3.5rem;}}
         /* 不佔版面的元素移出排版，工具列一開始就在最終位置，不會因間距而跳動。 */
         [data-testid="stElementContainer"]:has(> [data-testid="stMarkdown"] style),
-        [data-testid="stLayoutWrapper"]:has(> :is(.st-key-dashboard_scroll, .st-key-analysis_scroll)) {{
+        [data-testid="stLayoutWrapper"]:has(> .st-key-dashboard_scroll) {{
             position: absolute; height: 0; overflow: hidden;
         }}
         h1, h2, h3 {{font-weight: 500 !important; letter-spacing: -.02em;}}
@@ -285,14 +280,7 @@ def inject_styles() -> None:
                 [data-testid="stDateInput"], [data-testid="stMultiSelect"]
             ) {{flex-basis: 15rem;}}
         }}
-        .st-key-kline_heading {{margin-top: 1rem;}}
-        .st-key-kline_heading [data-testid="stHeadingWithActionElements"] h3 {{padding: 0;}}
-        .st-key-analysis_cards [data-testid="stHorizontalBlock"] {{gap: .75rem;}}
-        .st-key-analysis_cards button {{min-height: 4.5rem; border-radius: 20px; font-weight: 500;}}
-        .st-key-analysis_cards button[kind="secondary"] {{border: 0; background: var(--surface);}}
-        .st-key-analysis_cards button[kind="secondary"]:hover {{background: var(--surface-hover); color: var(--ink);}}
-        .st-key-analysis_panel {{min-height: 30rem;}}
-        .st-key-analysis_panel img {{max-height: 26rem; width: auto; max-width: 100%; margin: 0 auto;}}
+        [data-testid="stTabs"] [data-testid="stPyplot"] img {{max-height: 26rem; width: auto; max-width: 100%; margin: 0 auto;}}
         [data-testid="stMetric"] {{
             background: var(--surface); border-radius: 20px; padding: 1.05rem 1.2rem;
         }}
@@ -305,7 +293,7 @@ def inject_styles() -> None:
         [data-testid="stExpander"] details {{border: 0; border-radius: 16px; background: var(--surface);}}
         .status-card {{padding: .25rem .5rem; color: var(--dim); font-size: .9rem;
           border-bottom: 1px solid var(--line);}}
-        .hero {{padding: 1.4rem 0 1.1rem;}}
+        .hero {{padding: .2rem 0;}}
         .hero h1 {{font-size: clamp(1.8rem, 3.4vw, 2.5rem); line-height: 1.15; padding: 0;}}
         .hero p {{color: var(--dim);}}
         </style>
@@ -370,77 +358,19 @@ def render_status(stocks: dict[str, pd.DataFrame], errors: dict[str, str]) -> No
         st.caption("資料狀態僅表示更新流程結果；選股條件請至「條件選股」查看。")
 
 
-def scroll_to_analysis_panel() -> None:
-    """Scroll to the opened panel unless it is already fully visible below the sticky toolbar."""
-    with st.container(key="analysis_scroll"):
-        components.html(
-            f"<!-- {uuid4()} -->" + """
-            <script>
-            const page = window.parent.document;
-            const main = page.querySelector('[data-testid="stMain"]');
-            const panel = page.querySelector('.st-key-analysis_panel');
-            const toolbar = page.querySelector('.st-key-dashboard_toolbar');
-            if (main && panel) {
-                const toolbarBottom = toolbar && getComputedStyle(toolbar.parentElement).position === "sticky"
-                    ? toolbar.getBoundingClientRect().bottom : main.getBoundingClientRect().top;
-                const box = panel.getBoundingClientRect();
-                if (box.top < toolbarBottom || box.bottom > main.getBoundingClientRect().bottom) {
-                    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
-                    main.scrollTo({
-                        top: main.scrollTop + box.top - toolbarBottom - 12,
-                        behavior: calm ? "auto" : "smooth",
-                    });
-                }
-            }
-            </script>
-            """,
-            height=1,
+def render_kline_tab(filtered: pd.DataFrame, stock_label: str, ma_keys: list[str], bollinger_key: str) -> None:
+    with st.container(key="kline_options"):
+        columns = st.columns([1] * (len(MA_WINDOWS) + 1) + [4], vertical_alignment="center")
+        ma_windows = tuple(
+            window for window, column, key in zip(MA_WINDOWS, columns, ma_keys)
+            if column.checkbox(f"MA{window}", value=True, key=key)
         )
-
-
-def toggle_analysis_panel(panel: str) -> None:
-    active = st.session_state.get("analysis_panel")
-    st.session_state["analysis_panel"] = None if active == panel else panel
-    st.session_state["analysis_scroll"] = active != panel
-
-
-@st.fragment
-def render_analysis(filtered: pd.DataFrame, stock_label: str, volume_key: str) -> None:
-    """點卡片時只重畫這一區，K 線圖不會被重新產生，畫面才不會跳動。"""
-    st.subheader("分析")
-    active_panel = st.session_state.get("analysis_panel")
-    with st.container(key="analysis_cards"):
-        for column, (panel, icon) in zip(st.columns(len(ANALYSIS_PANELS)), ANALYSIS_PANELS.items()):
-            column.button(
-                panel, icon=icon, key=f"analysis_card_{panel}", use_container_width=True,
-                type="primary" if panel == active_panel else "secondary",
-                on_click=toggle_analysis_panel, args=(panel,),
-            )
-
-    should_scroll = st.session_state.pop("analysis_scroll", False)
-    if active_panel is None:
-        return
-    # 三種內容佔同樣高度，切換時版面不變，捲動位置也不會被拉走。
-    with st.container(key="analysis_panel"):
-        if active_panel == "收盤價走勢":
-            st.line_chart(
-                filtered.set_index("date")[["close"]].rename(columns={"close": "收盤價"}),
-                height=ANALYSIS_PANEL_HEIGHT,
-            )
-        elif active_panel == "成交量走勢":
-            show_volume_ma = st.checkbox("20 日均量", value=True, key=volume_key)
-            st.pyplot(volume_chart(filtered, title=f"{stock_label} 成交量", show_average=show_volume_ma))
-        elif active_panel == "交易資料":
-            display_columns = {"date": "日期", "open": "開盤價", "high": "最高價", "low": "最低價",
-                               "close": "收盤價", "change": "漲跌價差", "trade_volume": "成交量"}
-            table = filtered[list(display_columns)].rename(columns=display_columns)
-            table["日期"] = table["日期"].dt.strftime("%Y-%m-%d")
-            st.dataframe(
-                table.sort_values("日期", ascending=False), hide_index=True,
-                use_container_width=True, height=ANALYSIS_PANEL_HEIGHT,
-            )
-    if should_scroll:
-        scroll_to_analysis_panel()
+        show_bollinger = columns[len(MA_WINDOWS)].checkbox("布林通道", value=False, key=bollinger_key)
+        columns[-1].caption("滾輪縮放、拖曳平移；游標停留看當日數值。紅 K 漲、綠 K 跌。")
+    components.html(
+        tradingview_chart(filtered, title=stock_label, ma_windows=ma_windows, show_bollinger=show_bollinger),
+        height=TRADINGVIEW_HEIGHT,
+    )
 
 
 def render_single_stock(stocks: dict[str, pd.DataFrame], stock_label: str | None, date_slot) -> None:
@@ -467,13 +397,12 @@ def render_single_stock(stocks: dict[str, pd.DataFrame], stock_label: str | None
         st.info("請選擇日期範圍的結束日期。")
 
     ma_keys = [f"show_ma_{window}" for window in MA_WINDOWS]
-    indicator_keys = [f"show_indicator_{name}" for name in INDICATORS]
-    period_key = "kline_period"
+    bollinger_key = "show_bollinger"
     volume_key = "show_volume_ma_20"
     if filtered is None or filtered.empty:
         # Keep the chart preferences while the range picker waits for the second date.
         st.session_state.update({
-            key: st.session_state[key] for key in (*ma_keys, *indicator_keys, period_key, volume_key)
+            key: st.session_state[key] for key in (*ma_keys, bollinger_key, volume_key)
             if key in st.session_state
         })
         return
@@ -483,12 +412,13 @@ def render_single_stock(stocks: dict[str, pd.DataFrame], stock_label: str | None
     change = latest["price_change"] if previous is not None else None
     change_percent = latest["change_percent"] if previous is not None else None
     name = latest.get("stock_name") or stock_label
-    st.markdown(
+    # 標題與重點數字排成同一列，圖表與分頁才能在一個畫面內看完，不用往下捲。
+    hero, *metric_columns = st.columns([2.2, 1, 1, 1, 1.2], vertical_alignment="center")
+    hero.markdown(
         f'<div class="hero"><h1 style="margin:0">{name}（{latest["stock_id"]}）</h1>'
-        f'<p style="margin:.4rem 0 0">交易資料與技術指標總覽 · {start_date} ～ {end_date}</p></div>',
+        f'<p style="margin:.4rem 0 0">{start_date} ～ {end_date}</p></div>',
         unsafe_allow_html=True,
     )
-    metric_columns = st.columns(4)
     metric_columns[0].metric("最新收盤價", format_number(latest["close"]),
                              f"{format_number(change)} ({format_number(change_percent, '%')})",
                              delta_color="inverse")
@@ -496,32 +426,26 @@ def render_single_stock(stocks: dict[str, pd.DataFrame], stock_label: str | None
     metric_columns[2].metric("區間最低價", format_number(filtered["low"].min()))
     metric_columns[3].metric("最新成交量（股）", format_number(latest.get("trade_volume")))
 
-    with st.container(key="kline_heading"):
-        heading, *indicators = st.columns([6, 1, 1, 1], vertical_alignment="center")
-        heading.subheader("K 線圖")
-        ma_windows = tuple(
-            window for window, column, key in zip(MA_WINDOWS, indicators, ma_keys)
-            if column.checkbox(f"MA{window}", value=True, key=key)
+    kline_tab, close_tab, volume_tab, table_tab = st.tabs(["K 線圖", "收盤價走勢", "成交量走勢", "交易資料"])
+    with kline_tab:
+        render_kline_tab(filtered, stock_label, ma_keys, bollinger_key)
+    with close_tab:
+        st.line_chart(
+            filtered.set_index("date")[["close"]].rename(columns={"close": "收盤價"}),
+            height=ANALYSIS_PANEL_HEIGHT,
         )
-    with st.container(key="kline_options"):
-        period_column, *indicator_columns = st.columns([4, 1, 1, 1, 1], vertical_alignment="center")
-        period = period_column.segmented_control(
-            "期間", list(PERIODS), default="全部", key=period_key, label_visibility="collapsed",
+    with volume_tab:
+        show_volume_ma = st.checkbox("20 日均量", value=True, key=volume_key)
+        st.pyplot(volume_chart(filtered, title=f"{stock_label} 成交量", show_average=show_volume_ma))
+    with table_tab:
+        display_columns = {"date": "日期", "open": "開盤價", "high": "最高價", "low": "最低價",
+                           "close": "收盤價", "change": "漲跌價差", "trade_volume": "成交量"}
+        table = filtered[list(display_columns)].rename(columns=display_columns)
+        table["日期"] = table["日期"].dt.strftime("%Y-%m-%d")
+        st.dataframe(
+            table.sort_values("日期", ascending=False), hide_index=True,
+            use_container_width=True, height=ANALYSIS_PANEL_HEIGHT,
         )
-        indicators = tuple(
-            name for (name, label), column, key in zip(INDICATORS.items(), indicator_columns, indicator_keys)
-            if column.checkbox(label, value=False, key=key)
-        )
-    # 取消選取期間時 segmented_control 回傳 None，視為全部。
-    chart_data = recent_period(filtered, PERIODS.get(period))
-    st.plotly_chart(
-        interactive_chart(chart_data, title=f"{stock_label} 日 K 線", ma_windows=ma_windows, indicators=indicators),
-        config={"displaylogo": False, "scrollZoom": True},
-    )
-    st.caption("紅 K：收盤高於開盤；綠 K：收盤低於開盤。均線與指標資料不足完整天數時留白。"
-               "滑鼠停留可查看當日價格、成交量與指標；拖曳框選可縮放，雙擊還原。")
-
-    render_analysis(filtered, stock_label, volume_key)
 
 
 def render_stock_picker(stocks: dict[str, pd.DataFrame]) -> None:

@@ -118,6 +118,50 @@ class TechnicalIndicatorTests(unittest.TestCase):
         self.assertTrue(stock_b["bb_middle"][:19].isna().all())
 
 
+class MoreIndicatorTests(unittest.TestCase):
+    def test_ma10(self):
+        result = calculate_indicators(ohlc(range(1, 11)))
+        self.assertTrue(pd.isna(result.loc[8, "ma_10"]))
+        self.assertAlmostEqual(result.loc[9, "ma_10"], 5.5)
+
+    def test_bias_is_percent_distance_from_moving_average(self):
+        result = calculate_indicators(ohlc(range(1, 25)))
+        self.assertTrue(result["bias_6"][:5].isna().all())
+        self.assertAlmostEqual(result.loc[5, "bias_6"], (6 - 3.5) / 3.5 * 100)
+        self.assertAlmostEqual(result.loc[11, "bias_12"], (12 - 6.5) / 6.5 * 100)
+        self.assertTrue(result["bias_24"][:23].isna().all())
+        self.assertAlmostEqual(result.loc[23, "bias_24"], 92)
+
+    def test_williams_r(self):
+        result = calculate_indicators(ohlc(range(1, 15)))
+        self.assertTrue(result["willr_14"][:13].isna().all())
+        # 14 日最高 15、最低 0、收盤 14。
+        self.assertAlmostEqual(result.loc[13, "willr_14"], (15 - 14) / 15 * -100)
+        flat = calculate_indicators(pd.DataFrame({"close": [10.0] * 14, "high": [10.0] * 14, "low": [10.0] * 14}))
+        self.assertAlmostEqual(flat.loc[13, "willr_14"], -50)
+
+    def test_obv_adds_volume_on_up_days_and_subtracts_on_down_days(self):
+        frame = pd.DataFrame({"close": [10.0, 11, 10, 10, 12], "trade_volume": [100.0, 200, 300, 400, 500]})
+        self.assertEqual(list(calculate_indicators(frame)["obv"]), [0, 200, -100, -100, 400])
+
+    def test_atr_and_dmi_on_steady_uptrend(self):
+        result = calculate_indicators(ohlc(range(1, 41)))
+        # 每日高低差 2、與前收盤的差也不超過 2 → 真實波幅恆為 2。
+        self.assertTrue(result["atr_14"][:13].isna().all())
+        self.assertAlmostEqual(result.loc[13, "atr_14"], 2)
+        self.assertTrue(result["plus_di_14"][:14].isna().all())
+        self.assertAlmostEqual(result.loc[14, "plus_di_14"], 50)  # 每天上漲 1，平均波幅 2
+        self.assertAlmostEqual(result.loc[14, "minus_di_14"], 0)
+        self.assertTrue(result["adx_14"][:27].isna().all())
+        self.assertAlmostEqual(result.loc[27, "adx_14"], 100)
+
+    def test_range_and_volume_indicators_need_their_columns(self):
+        result = calculate_indicators(pd.DataFrame({"close": range(1, 30)}))
+        for column in ("willr_14", "atr_14", "adx_14", "obv"):
+            self.assertNotIn(column, result.columns)
+        self.assertIn("bias_6", result.columns)
+
+
 class RepositoryDataTests(unittest.TestCase):
     def test_bundled_csv_files_load(self):
         for name in ("2327.csv", "2492.csv"):
