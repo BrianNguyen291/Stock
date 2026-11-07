@@ -450,7 +450,7 @@ def render_stock_lookup() -> None:
             st.html("""<h1>探索股票，掌握市場趨勢</h1>
               <p>搜尋 TWSE 上市股票與 ETF · 查詢已公布日交易資料 · 自動同步至 SQLite</p>""")
             with st.form("twse_stock_lookup_form", clear_on_submit=False, border=False):
-                st.markdown("#### 搜尋上市股票或 ETF")
+                st.markdown("#### ↓ 搜尋上市股票或 ETF ↓")
                 entered = st.text_input(
                     "股票代號",
                     value=st.session_state.get("twse_lookup_id", ""),
