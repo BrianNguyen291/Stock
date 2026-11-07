@@ -220,6 +220,8 @@ def main(argv=None):
             LOG.info("[%s/%s] 檢查股票 %s", idx + 1, len(stocks), stock_id)
             record = update_one(session, stock_id, start, end, args.raw_dir, args.pending_dir, args.attempts, args.retry_seconds, args.delay, db=db, write_db=args.write_db)
             reports.append(record)
+            if args.write_db:
+                db.record_stock_run(record)
             LOG.info("%s：%s，待新增 %d 筆，實際寫入 %d 筆，來源最新日期 %s", stock_id, record["status"], record["new_rows"], record["written_rows"], record["latest_source_date"])
             if idx + 1 < len(stocks):
                 time.sleep(args.delay)

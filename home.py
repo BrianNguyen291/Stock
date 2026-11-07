@@ -4,6 +4,7 @@ from base64 import b64encode
 from html import escape
 
 import streamlit as st
+import requests
 
 from auth import current_identity, render_auth, render_logout
 from market_map import render_market_map
@@ -142,6 +143,23 @@ body:has(.st-key-market_profile) [data-testid="stPopoverBody"]:has(.profile-deta
 .st-key-market_search [data-testid="stFormSubmitButton"] button {{
   border: 1px solid #f2c14e; background: #141416; min-height: 2.7rem;
   color: #f5f5f5;
+}}
+/* 中文名稱/代號搜尋建議：限制高度，避免大量結果把首頁撐開 */
+.st-key-market_suggestions {{
+  width: 100%; margin: .55rem 0 .35rem;
+  padding: .35rem; background: #141416; border: 1px solid #35363a;
+  border-radius: 16px; overflow-y: auto;
+}}
+.st-key-market_suggestions [data-testid="stButton"] button {{
+  width: 100%; text-align: left; justify-content: flex-start;
+  background: transparent; border-radius: 10px; padding: .55rem .85rem;
+  min-height: 2.6rem;
+}}
+.st-key-market_suggestions [data-testid="stButton"] button p {{
+  color: #f5f5f5; text-align: left; font-size: .92rem;
+}}
+.st-key-market_suggestions [data-testid="stButton"] button:hover {{
+  background: #27282c;
 }}
 /* Hero 與背景地圖 */
 .st-key-market_hero {{
@@ -396,42 +414,50 @@ def _render_cards(quotes, navigate):
 
 
 def render_home(stock_labels, quotes, navigate):
-    def search_and_open_stock(query: str) -> None:
-        """Only network-fetch after form submit, then open persisted dashboard data."""
-        from database import StockDatabase
-        from stock_lookup import fetch_and_store_stock, validate_stock_id
+    """Stable homepage stock search with Chinese-name suggestions."""
+    from database import StockDatabase
+    from stock_lookup import fetch_and_store_stock, resolve_stock_query, search_stock_candidates
 
-        query = query.strip()
+    def queue_search(query=None):
+        query = str(query if query is not None else st.session_state.get("home_twse_search", "")).strip()
         if not query:
-            st.warning("請輸入股票代號，例如 2330、2327、009816。")
+            st.session_state["home_search_error"] = "請輸入股票中文名稱或代號。"
             return
+        st.session_state["home_pending_search"] = query
+        st.session_state["home_suggestions_hidden_for"] = str(
+            st.session_state.get("home_twse_search", "")
+        ).strip()
+
+    # Resolve pending search BEFORE generating any Streamlit layout components.
+    # This prevents st.empty().empty() and st.rerun() from changing a live widget tree.
+    pending = st.session_state.pop("home_pending_search", None)
+    if pending:
         try:
-            db = StockDatabase()
-            if not query.isdigit():
-                matched = [item for item in db.list_available_stocks()
-                           if item["stock_name"] == query or
-                           f'{item["stock_id"]} {item["stock_name"]}' == query]
-                if len(matched) != 1:
-                    raise ValueError("新股票請使用代號查詢；已收錄的股票可輸入完整中文名稱。")
-                query = matched[0]["stock_id"]
-            code = validate_stock_id(query)
-            with st.spinner(f"正在向 TWSE 取得 {code} 已公布交易資料並同步 SQLite…"):
-                result = fetch_and_store_stock(code, days=180)
-            if not result["source_rows"]:
-                st.error(result.get("warning") or "TWSE 沒有回傳此代號的有效交易資料，未新增到儀表板。")
-                return
-            stocks = [s for s in StockDatabase().list_available_stocks() if s["stock_id"] == code]
-            if not stocks:
-                raise RuntimeError("資料未出現在 SQLite，請檢查資料庫設定。")
-            label = f'{code} {stocks[0]["stock_name"]}'.strip()
-            st.session_state["twse_lookup_id"] = code
-            st.session_state["twse_lookup_days"] = 180
-            st.session_state["twse_lookup_result"] = result
-            st.session_state["home_search_notice"] = f'{label}：已從 TWSE 同步資料（新增 {result["inserted_rows"]} 筆）'
-            navigate("個股儀表板", label)
-            st.rerun()
-        except (ValueError, RuntimeError, OSError) as exc:
-            st.error(f"股票查詢失敗：{exc}")
+            stock_id = resolve_stock_query(pending)
+            with st.spinner(f"正在從 TWSE 查詢 {stock_id} 並同步 SQLite…"):
+                result = fetch_and_store_stock(stock_id, days=180)
+            if not result.get("source_rows"):
+                st.session_state["home_search_error"] = (
+                    result.get("warning") or "TWSE 未回傳有效交易資料，請檢查代號與來源。"
+                )
+            else:
+                available = [
+                    item for item in StockDatabase().list_available_stocks()
+                    if item["stock_id"] == stock_id
+                ]
+                if not available:
+                    raise RuntimeError("已取得資料但 SQLite 尚無此股票，請檢查資料庫設定。")
+                label = f'{stock_id} {available[0]["stock_name"]}'.strip()
+                st.session_state["twse_lookup_id"] = stock_id
+                st.session_state["twse_lookup_days"] = 180
+                st.session_state["twse_lookup_result"] = result
+                st.session_state["home_search_notice"] = (
+                    f'{label}：已同步 TWSE 資料（新增 {result["inserted_rows"]} 筆）'
+                )
+                navigate("個股儀表板", label)
+                st.rerun()
+        except (ValueError, RuntimeError, OSError, requests.RequestException) as exc:
+            st.session_state["home_search_error"] = f"股票查詢失敗：{exc}"
 
     st.html(PAGE_STYLE)
     with st.container(key="market_shell"):
@@ -450,15 +476,46 @@ def render_home(stock_labels, quotes, navigate):
             </div>
             """)
             with st.container(key="market_search"):
-                with st.form("market_home_twse_form", border=False):
-                    entered = st.text_input(
-                        "搜尋股票代號", key="home_twse_search",
-                        placeholder="輸入股票代號，例如 2330、2327、009816",
-                        label_visibility="collapsed", max_chars=20,
-                    )
-                    submitted = st.form_submit_button("查詢 TWSE 並加入儀表板", use_container_width=True)
-                if submitted:
-                    search_and_open_stock(entered)
+                entered = st.text_input(
+                    "搜尋上市股票／ETF",
+                    key="home_twse_search",
+                    placeholder="輸入中文名稱或代號，例如國巨、國泰、009816",
+                    label_visibility="collapsed",
+                    max_chars=32,
+                )
+                typed = entered.strip()
+                hidden_for = st.session_state.get("home_suggestions_hidden_for")
+                if hidden_for and typed != hidden_for:
+                    st.session_state.pop("home_suggestions_hidden_for", None)
+                if typed and st.session_state.get("home_suggestions_hidden_for") != typed:
+                    try:
+                        candidates = search_stock_candidates(typed, limit=8)
+                    except (ValueError, OSError, RuntimeError, requests.RequestException):
+                        candidates = []
+                        st.caption("暫時無法載入相關搜尋，仍可輸入股票代號查詢。")
+                    if candidates:
+                        # No st.empty() or on-the-fly container clearing.
+                        with st.container(key="market_suggestions", height=265, border=False):
+                            st.caption("相關股票／ETF · 點選後直接查詢")
+                            for item in candidates:
+                                code = item["stock_id"]
+                                label = f'{code}　{item["stock_name"]}'
+                                st.button(
+                                    label,
+                                    key=f"home_suggest_{code}",
+                                    use_container_width=True,
+                                    on_click=queue_search,
+                                    args=(code,),
+                                )
+                st.button(
+                    "查詢 TWSE 並加入儀表板",
+                    key="market_home_twse_go",
+                    use_container_width=True,
+                    on_click=queue_search,
+                )
+                error = st.session_state.pop("home_search_error", None)
+                if error:
+                    st.error(error)
                 shortcuts = [
                     label for code in ("1101", "2330", "2317")
                     for label in stock_labels if label.startswith(f"{code} ")
