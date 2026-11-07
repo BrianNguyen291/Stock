@@ -275,6 +275,26 @@ LOOKUP_STYLE = """
         padding: 16px !important;
     }
 }
+/* 查詢資料期間：下拉選單改成純白色 */
+.st-key-lookup_hero [data-testid="stSelectbox"] [data-baseweb="select"] > div,
+.st-key-lookup_hero [data-testid="stSelectbox"] [role="combobox"] {
+    background: #FFFFFF !important;
+    background-color: #FFFFFF !important;
+    color: #172433 !important;
+    border-radius: 14px !important;
+}
+
+/* 下拉選單內的箭頭 */
+.st-key-lookup_hero [data-testid="stSelectbox"] svg {
+    color: #172433 !important;
+}
+/* 查詢資料期間：白色背景 */
+.st-key-lookup_hero [data-testid="stSelectbox"] [data-baseweb="select"] > div {
+    background-color: #FFFFFF !important;
+    border: 1px solid #E3E8ED !important;
+    border-radius: 14px !important;
+    color: #172433 !important;
+}
 </style>
 """
 
@@ -448,7 +468,7 @@ def render_stock_lookup() -> None:
                     )
                 with button_col:
                     submitted = st.form_submit_button(
-                        "🔎 查詢 TWSE 並同步到儀表板", type="primary", use_container_width=True,
+                        "查詢 TWSE 並同步到個股儀表板", type="primary", use_container_width=True,
                     )
             st.caption("資料來源：臺灣證券交易所 TWSE（盤後日交易資料，非即時報價）。僅支援資料來源可取得的代號。")
 
