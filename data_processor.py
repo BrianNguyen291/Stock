@@ -30,6 +30,10 @@ KD_WINDOW = 9
 KD_START = 50.0
 BOLLINGER_WINDOW = 20
 BOLLINGER_WIDTH = 2
+MA_WINDOWS = (5, 10, 20, 60)
+BIAS_WINDOWS = (6, 12, 24)
+WILLIAMS_WINDOW = 14
+DMI_WINDOW = 14
 
 
 def clean_data(data: pd.DataFrame) -> pd.DataFrame:
@@ -101,11 +105,41 @@ def _kd(close: pd.Series, high: pd.Series, low: pd.Series) -> tuple[pd.Series, p
     return pd.Series(k_values, index=close.index), pd.Series(d_values, index=close.index)
 
 
+def _wilder(values: pd.Series, window: int) -> pd.Series:
+    return values.ewm(alpha=1 / window, adjust=False, min_periods=window).mean()
+
+
+def _williams_r(close: pd.Series, high: pd.Series, low: pd.Series) -> pd.Series:
+    """威廉指標 %R(14)：收盤距 14 日最高價的位置，0 ~ -100；區間無高低差時視為 -50。"""
+    highest = high.rolling(WILLIAMS_WINDOW, min_periods=WILLIAMS_WINDOW).max()
+    lowest = low.rolling(WILLIAMS_WINDOW, min_periods=WILLIAMS_WINDOW).min()
+    span = highest - lowest
+    return ((highest - close) / span.where(span.ne(0)) * -100).mask(span.eq(0), -50.0)
+
+
+def _dmi(close: pd.Series, high: pd.Series, low: pd.Series) -> dict[str, pd.Series]:
+    """ATR(14) 與 DMI(14)：+DI、-DI、ADX，皆以 Wilder 平滑。"""
+    previous_close = close.shift(1)
+    true_range = pd.concat(
+        [high - low, (high - previous_close).abs(), (low - previous_close).abs()], axis=1
+    ).max(axis=1, skipna=True)
+    up, down = high.diff(), -low.diff()
+    plus_dm = up.where((up > down) & (up > 0), 0.0).mask(up.isna())
+    minus_dm = down.where((down > up) & (down > 0), 0.0).mask(down.isna())
+    atr = _wilder(true_range, DMI_WINDOW)
+    plus_di = _wilder(plus_dm, DMI_WINDOW) / atr.where(atr.ne(0)) * 100
+    minus_di = _wilder(minus_dm, DMI_WINDOW) / atr.where(atr.ne(0)) * 100
+    di_sum = plus_di + minus_di
+    dx = ((plus_di - minus_di).abs() / di_sum.where(di_sum.ne(0)) * 100).mask(di_sum.eq(0), 0.0)
+    return {"atr_14": atr, "plus_di_14": plus_di, "minus_di_14": minus_di, "adx_14": _wilder(dx, DMI_WINDOW)}
+
+
 def calculate_indicators(data: pd.DataFrame) -> pd.DataFrame:
     """依股票計算完整交易日視窗的均線與技術指標；資料不足時保留缺值。
 
-    技術指標：RSI(14)、MACD(12, 26, 9)、KD(9, 3, 3，需有 high/low 欄位)、
-    布林通道（20 日均線 ± 2 倍母體標準差）。
+    技術指標：RSI(14)、MACD(12, 26, 9)、布林通道（20 日均線 ± 2 倍母體標準差）、
+    乖離率 BIAS(6/12/24)；需有 high/low 欄位的 KD(9, 3, 3)、威廉 %R(14)、ATR(14)、DMI(14)；
+    需有成交量的 OBV。
     """
     frame = data.copy()
     if "close" not in frame.columns:
@@ -125,8 +159,11 @@ def calculate_indicators(data: pd.DataFrame) -> pd.DataFrame:
     frame["previous_close"] = previous_close
     frame["price_change"] = close - previous_close
     frame["change_percent"] = (frame["price_change"] / previous_close.where(previous_close.ne(0))) * 100
-    for window in (5, 20, 60):
+    for window in MA_WINDOWS:
         frame[f"ma_{window}"] = close.rolling(window=window, min_periods=window).mean()
+    for window in BIAS_WINDOWS:
+        average = close.rolling(window=window, min_periods=window).mean()
+        frame[f"bias_{window}"] = (close - average) / average.where(average.ne(0)) * 100
 
     frame["rsi_14"] = _rsi(close)
     frame["macd"], frame["macd_signal"] = _macd(close)
@@ -140,6 +177,9 @@ def calculate_indicators(data: pd.DataFrame) -> pd.DataFrame:
         high = pd.to_numeric(frame["high"], errors="coerce")
         low = pd.to_numeric(frame["low"], errors="coerce")
         frame["kd_k"], frame["kd_d"] = _kd(close, high, low)
+        frame["willr_14"] = _williams_r(close, high, low)
+        for column, values in _dmi(close, high, low).items():
+            frame[column] = values
 
     if "trade_volume" in frame.columns:
         volume = pd.to_numeric(frame["trade_volume"], errors="coerce")
@@ -150,6 +190,8 @@ def calculate_indicators(data: pd.DataFrame) -> pd.DataFrame:
         ) * 100
         for window in (5, 20):
             frame[f"volume_ma_{window}"] = volume.rolling(window=window, min_periods=window).mean()
+        # OBV：上漲日加當日量、下跌日減當日量，由 0 起算。
+        frame["obv"] = (np.sign(close.diff()).fillna(0) * volume.fillna(0)).cumsum()
 
     return frame
 

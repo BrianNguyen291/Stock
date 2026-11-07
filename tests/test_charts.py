@@ -1,11 +1,10 @@
 """charts.py 測試：python -m pytest tests/test_charts.py"""
 
+import json
 import warnings
 from io import BytesIO
-from itertools import pairwise
 
 import pandas as pd
-import plotly.graph_objects as go
 import pytest
 from matplotlib.colors import to_rgba
 from matplotlib.figure import Figure
@@ -13,12 +12,13 @@ from matplotlib.figure import Figure
 from charts import (
     DOWN_COLOR,
     FLAT_COLOR,
-    INDICATORS,
+    LIGHTWEIGHT_CHARTS_SRC,
+    LIGHTWEIGHT_CHARTS_SRI,
     UP_COLOR,
     candlestick_chart,
-    interactive_chart,
+    chart_payload,
     price_trend_chart,
-    recent_period,
+    tradingview_chart,
     volume_chart,
 )
 from data_processor import load_data, process_data
@@ -119,10 +119,10 @@ def long_sample():
 def test_candlestick_moving_averages_match_data_processor(long_sample):
     axes = candlestick_chart(long_sample).axes[0]
     lines = {line.get_label(): line.get_ydata() for line in axes.get_lines()}
-    assert list(lines) == ["MA5", "MA20", "MA60"]
+    assert list(lines) == ["MA5", "MA10", "MA20", "MA60"]
     shown = long_sample.dropna(subset=["open"]).reset_index(drop=True)
     for position in (10, 40, 63):  # 抽查缺值列前後的日期，確認沒有錯位
-        for window in (5, 20, 60):
+        for window in (5, 10, 20, 60):
             expected = shown.loc[position, f"ma_{window}"]
             actual = lines[f"MA{window}"][position]
             assert (pd.isna(expected) and pd.isna(actual)) or actual == pytest.approx(expected)
@@ -154,132 +154,97 @@ def test_repository_data(path):
         render(chart(data))
 
 
-# ---- Plotly 互動圖表 ----
-
-PANEL_AXES = {"rsi": ["RSI(14)"], "macd": ["DIF", "MACD", "OSC"], "kd": ["K(9)", "D(9)"]}
+# ---- TradingView 互動 K 線圖 ----
 
 
-def traces(figure, axis=None):
-    return {trace.name: trace for trace in figure.data if axis is None or trace.yaxis == axis}
+def values(series):
+    return [point.get("value") for point in series["data"]]
 
 
-def axis_ids(figure):
-    return sorted({trace.yaxis for trace in figure.data}, key=lambda name: int(name[1:] or 1))
-
-
-def test_interactive_chart_shows_candles_and_volume_on_shared_dates(long_sample):
+def test_payload_aligns_candles_volume_overlays_and_indicators(long_sample):
     before = long_sample.copy()
-    figure = interactive_chart(long_sample)
-    assert isinstance(figure, go.Figure)
+    payload = chart_payload(long_sample)
     pd.testing.assert_frame_equal(long_sample, before)
-    assert axis_ids(figure) == ["y", "y2"]
-    candle, volume = traces(figure)["K 線"], traces(figure)["成交量"]
-    assert candle.type == "candlestick" and candle.yaxis == "y"
-    assert volume.type == "bar" and volume.yaxis == "y2"
     shown = long_sample.dropna(subset=["open"]).reset_index(drop=True)  # 缺開盤價的那天不畫
-    expected_dates = shown["date"].to_numpy()
-    for trace in figure.data:
-        assert trace.xaxis == "x"  # 同一條日期軸，縮放與游標會一起移動
-        assert (pd.to_datetime(trace.x).to_numpy() == expected_dates).all()
-    assert list(volume.y) == shown["trade_volume"].tolist()
-    figure.to_json()  # plotly 驗證整份設定
+    times = shown["date"].dt.strftime("%Y-%m-%d").tolist()
+    assert [candle["time"] for candle in payload["candles"]] == times
+    assert [point["time"] for point in payload["volume"]] == times
+    for series in payload["overlays"] + [line for tab in payload["indicators"] for line in tab["series"]]:
+        assert [point["time"] for point in series["data"]] == times, series["name"]
+    assert payload["candles"][0] == {"time": times[0], "open": 100.0, "high": 110.0, "low": 95.0, "close": 101.0}
+    assert values({"data": payload["volume"]}) == shown["trade_volume"].tolist()
+    json.dumps(payload, allow_nan=False)  # 不能把 NaN 交給瀏覽器
 
 
-def test_interactive_chart_uses_taiwan_colors(sample):
-    figure = interactive_chart(sample)
-    candle, volume = traces(figure)["K 線"], traces(figure)["成交量"]
-    assert candle.increasing.line.color == UP_COLOR and candle.increasing.fillcolor == UP_COLOR
-    assert candle.decreasing.line.color == DOWN_COLOR and candle.decreasing.fillcolor == DOWN_COLOR
-    # 成交量依當日漲跌（與前一日收盤比）上色；缺開盤價的那天不畫。
-    assert list(volume.marker.color) == [FLAT_COLOR, DOWN_COLOR, FLAT_COLOR]
+def test_payload_uses_taiwan_colors(sample):
+    payload = chart_payload(sample)
+    assert payload["colors"] == {"up": UP_COLOR, "down": DOWN_COLOR}
+    # 成交量依當日漲跌（與前一日收盤比）上色。
+    assert [point["color"] for point in payload["volume"]] == [FLAT_COLOR, DOWN_COLOR, FLAT_COLOR]
 
 
-def test_interactive_chart_has_crosshair_unified_hover_and_zoom(sample):
-    layout = interactive_chart(sample).layout
-    assert layout.hovermode == "x unified" and layout.hoversubplots == "axis"
-    assert layout.xaxis.showspikes and "across" in layout.xaxis.spikemode
-    assert layout.xaxis.rangeslider.visible is False
-    assert layout.dragmode == "zoom"
+def test_missing_values_become_whitespace_points(long_sample):
+    ma60 = next(series for series in chart_payload(long_sample)["overlays"] if series["name"] == "MA60")
+    assert all(point == {"time": point["time"]} for point in ma60["data"][:58])  # 視窗不足留白
+    assert "value" in ma60["data"][-1]
 
 
-def test_interactive_chart_skips_non_trading_days(long_sample):
-    figure = interactive_chart(long_sample)
-    breaks = set(figure.layout.xaxis.rangebreaks[0]["values"])
-    assert "2026-01-10" in breaks  # 週六
-    assert long_sample.loc[29, "date"].strftime("%Y-%m-%d") in breaks  # 缺開盤價而略過的那天
-    shown = long_sample.dropna(subset=["open"])["date"].dt.strftime("%Y-%m-%d")
-    assert breaks.isdisjoint(shown)
+def test_moving_averages_and_bollinger_can_be_toggled(long_sample):
+    names = [series["name"] for series in chart_payload(long_sample)["overlays"]]
+    assert names == ["MA5", "MA10", "MA20", "MA60"]
+    names = [series["name"] for series in chart_payload(long_sample, ma_windows=(20,), show_bollinger=True)["overlays"]]
+    assert names == ["MA20", "BB上", "BB中", "BB下"]
 
 
-def test_interactive_chart_moving_averages_can_be_toggled(long_sample):
-    assert [name for name in traces(interactive_chart(long_sample), "y") if name.startswith("MA")] == [
-        "MA5", "MA20", "MA60"]
-    assert "MA5" not in traces(interactive_chart(long_sample, ma_windows=(20,)))
+def test_indicator_tabs_in_order(long_sample):
+    tabs = chart_payload(long_sample)["indicators"]
+    assert [tab["name"] for tab in tabs] == ["MACD", "KD", "RSI", "BIAS", "W%R", "OBV", "DMI", "ATR"]
+    macd = tabs[0]
+    assert [line["type"] for line in macd["series"]] == ["line", "line", "histogram"]
+    assert tabs[1]["guides"] == [20, 80]
 
 
-@pytest.mark.parametrize("indicator", ["rsi", "macd", "kd"])
-def test_indicator_panel_added_below_volume(indicator, long_sample):
-    figure = interactive_chart(long_sample, indicators=(indicator,))
-    assert axis_ids(figure) == ["y", "y2", "y3"]
-    assert list(traces(figure, "y3")) == PANEL_AXES[indicator]
-
-
-def test_bollinger_bands_overlay_price_axis(long_sample):
-    figure = interactive_chart(long_sample, indicators=("bollinger",))
-    assert axis_ids(figure) == ["y", "y2"]
-    assert {"布林上軌", "布林中軌", "布林下軌"} <= set(traces(figure, "y"))
-
-
-def test_all_indicators_stack_in_fixed_order_without_overlap(long_sample):
-    figure = interactive_chart(long_sample, indicators=("kd", "bollinger", "rsi", "macd"))
-    assert axis_ids(figure) == ["y", "y2", "y3", "y4", "y5"]
-    assert list(traces(figure, "y3")) == PANEL_AXES["rsi"]
-    assert list(traces(figure, "y5")) == PANEL_AXES["kd"]
-    domains = [figure.layout[f"yaxis{n}" if n > 1 else "yaxis"].domain for n in range(1, 6)]
-    for upper, lower in pairwise(domains):
-        assert lower[1] < upper[0]  # 由上而下排列且不重疊
-    figure.to_json()
-
-
-def test_indicator_values_align_with_data_processor(long_sample):
-    figure = interactive_chart(long_sample, indicators=("bollinger", "rsi", "macd", "kd"))
+def test_indicator_values_match_data_processor(long_sample):
     shown = long_sample.dropna(subset=["open"]).reset_index(drop=True)
-    columns = {"布林上軌": "bb_upper", "RSI(14)": "rsi_14", "DIF": "macd", "MACD": "macd_signal",
-               "OSC": "macd_hist", "K(9)": "kd_k", "D(9)": "kd_d"}
+    columns = {"DIF": "macd", "OSC": "macd_hist", "K": "kd_k", "RSI14": "rsi_14", "BIAS6": "bias_6",
+               "%R14": "willr_14", "OBV": "obv", "ADX": "adx_14", "ATR14": "atr_14"}
+    lines = {line["name"]: line for tab in chart_payload(long_sample)["indicators"] for line in tab["series"]}
     for name, column in columns.items():
-        values = traces(figure)[name].y
+        actual = values(lines[name])
         for position in (10, 28, 29, 40, 63):  # 第 29 列前後：略過的那天不能讓之後的指標錯位
-            expected, actual = shown.loc[position, column], values[position]
-            assert (pd.isna(expected) and pd.isna(actual)) or actual == pytest.approx(expected), name
+            expected = shown.loc[position, column]
+            assert (pd.isna(expected) and actual[position] is None) or actual[position] == pytest.approx(expected), name
 
 
-def test_unknown_indicator_raises(sample):
-    with pytest.raises(ValueError, match="不支援的指標"):
-        interactive_chart(sample, indicators=("obv",))
+def test_indicator_tab_skipped_when_columns_missing(long_sample):
+    names = [tab["name"] for tab in chart_payload(long_sample.drop(columns=["bias_6"]))["indicators"]]
+    assert "BIAS" not in names and "MACD" in names
 
 
-def test_interactive_chart_rejects_bad_data(sample):
+def test_payload_rejects_bad_data(sample):
     with pytest.raises(ValueError, match="缺少必要欄位"):
-        interactive_chart(pd.DataFrame({"date": pd.to_datetime(["2026-01-02"])}))
+        chart_payload(pd.DataFrame({"date": pd.to_datetime(["2026-01-02"])}))
     with pytest.raises(ValueError, match="沒有可繪製的資料"):
-        interactive_chart(sample.iloc[:0])
+        chart_payload(sample.iloc[:0])
 
 
-def test_interactive_chart_single_trading_day(sample):
-    interactive_chart(sample.iloc[:1], indicators=tuple(INDICATORS)).to_json()
+def test_html_loads_pinned_library_with_integrity_and_embeds_data(sample):
+    html = tradingview_chart(sample, title="2330 台積電")
+    assert f'src="{LIGHTWEIGHT_CHARTS_SRC}" integrity="{LIGHTWEIGHT_CHARTS_SRI}"' in html
+    assert "@5.2.1/" in LIGHTWEIGHT_CHARTS_SRC
+    assert "2330 台積電" in html
+    assert "__" not in html.split("<body>")[1].split("const DATA")[0]  # 沒有遺留的佔位字
 
 
-def test_recent_period_keeps_trailing_months(long_sample):
-    before = long_sample.copy()
-    result = recent_period(long_sample, 1)
-    latest = long_sample["date"].max()
-    assert result["date"].max() == latest
-    assert result["date"].min() > latest - pd.DateOffset(months=1)
-    assert len(result) < len(long_sample)
-    pd.testing.assert_frame_equal(recent_period(long_sample, None), long_sample)
-    pd.testing.assert_frame_equal(long_sample, before)
+def test_html_escapes_script_breaking_title(sample):
+    html = tradingview_chart(sample, title="</script><script>alert(1)</script>")
+    assert "</script><script>alert(1)" not in html
+    data = html.split("const DATA = ")[1].split(";\nfunction fail")[0]
+    assert json.loads(data.replace("<\\/", "</"))["title"] == "</script><script>alert(1)</script>"
 
 
 @pytest.mark.parametrize("path", ["2327.csv", "2492.csv"])
-def test_repository_data_interactive(path):
-    interactive_chart(load_data(path), indicators=tuple(INDICATORS)).to_json()
+def test_repository_data_tradingview(path):
+    payload = chart_payload(load_data(path))
+    json.dumps(payload, allow_nan=False)
+    assert len(payload["indicators"]) == 8
