@@ -12,7 +12,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from charts import MA_WINDOWS, candlestick_chart, volume_chart
+from charts import INDICATORS, MA_WINDOWS, PERIODS, interactive_chart, recent_period, volume_chart
 from comparison import render_comparison
 from crawler import crawl
 from database import StockDatabase
@@ -467,11 +467,13 @@ def render_single_stock(stocks: dict[str, pd.DataFrame], stock_label: str | None
         st.info("請選擇日期範圍的結束日期。")
 
     ma_keys = [f"show_ma_{window}" for window in MA_WINDOWS]
+    indicator_keys = [f"show_indicator_{name}" for name in INDICATORS]
+    period_key = "kline_period"
     volume_key = "show_volume_ma_20"
     if filtered is None or filtered.empty:
         # Keep the chart preferences while the range picker waits for the second date.
         st.session_state.update({
-            key: st.session_state[key] for key in (*ma_keys, volume_key)
+            key: st.session_state[key] for key in (*ma_keys, *indicator_keys, period_key, volume_key)
             if key in st.session_state
         })
         return
@@ -501,8 +503,23 @@ def render_single_stock(stocks: dict[str, pd.DataFrame], stock_label: str | None
             window for window, column, key in zip(MA_WINDOWS, indicators, ma_keys)
             if column.checkbox(f"MA{window}", value=True, key=key)
         )
-    st.pyplot(candlestick_chart(filtered, title=f"{stock_label} 日 K 線", ma_windows=ma_windows))
-    st.caption("紅 K：收盤高於開盤；綠 K：收盤低於開盤。均線資料不足完整天數時留白。")
+    with st.container(key="kline_options"):
+        period_column, *indicator_columns = st.columns([4, 1, 1, 1, 1], vertical_alignment="center")
+        period = period_column.segmented_control(
+            "期間", list(PERIODS), default="全部", key=period_key, label_visibility="collapsed",
+        )
+        indicators = tuple(
+            name for (name, label), column, key in zip(INDICATORS.items(), indicator_columns, indicator_keys)
+            if column.checkbox(label, value=False, key=key)
+        )
+    # 取消選取期間時 segmented_control 回傳 None，視為全部。
+    chart_data = recent_period(filtered, PERIODS.get(period))
+    st.plotly_chart(
+        interactive_chart(chart_data, title=f"{stock_label} 日 K 線", ma_windows=ma_windows, indicators=indicators),
+        config={"displaylogo": False, "scrollZoom": True},
+    )
+    st.caption("紅 K：收盤高於開盤；綠 K：收盤低於開盤。均線與指標資料不足完整天數時留白。"
+               "滑鼠停留可查看當日價格、成交量與指標；拖曳框選可縮放，雙擊還原。")
 
     render_analysis(filtered, stock_label, volume_key)
 
