@@ -327,20 +327,32 @@ def render_status(stocks: dict[str, pd.DataFrame], errors: dict[str, str]) -> No
     for label, path in STOCK_FILES.items():
         data = stocks.get(label, pd.DataFrame())
         latest = data["date"].max().strftime("%Y-%m-%d") if not data.empty else "-"
-        update = database.latest_update(path)
+        run = database.latest_stock_run(path.stem)
+        update = database.latest_update(path) if run is None else None
         if label in errors:
-            state = "失敗"
-        elif update is None:
-            state = "尚未更新"
-        else:
-            state = "已同步"
+            state, detail = "失敗", errors[label]
+        elif run is not None:
+            state = {
+                "updated": "已同步", "no_new_rows": "無新資料",
+                "not_published": "尚未公布", "unverified_no_data": "來源無資料",
+                "partial_failure": "部分失敗", "failed": "失敗",
+            }.get(run["status"], run["status"])
+            detail = run["error_message"]
+            if run["status"] in ("updated", "no_new_rows"):
+                successful += 1
+        elif update is not None:
+            state, detail = "已匯入（未驗證 WebJob）", ""
             successful += 1
+        else:
+            state, detail = "尚無執行紀錄", ""
+        updated_at = taiwan_time(run["checked_at"] if run else
+                                 update["updated_at"] if update else None)
         status_rows.append({
             "股票": label,
             "狀態": state,
             "最新交易日": latest,
-            "最後更新（台灣）": taiwan_time(update["updated_at"] if update else None),
-            "訊息": errors.get(label, ""),
+            "最後檢查（台灣）": updated_at,
+            "訊息": detail,
         })
 
     with st.expander(

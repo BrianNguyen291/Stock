@@ -123,6 +123,18 @@ class StockDatabase:
                     note TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY (stock_id, date)
                 );
+                CREATE TABLE IF NOT EXISTS stock_update_runs (
+                    id INTEGER PRIMARY KEY,
+                    stock_id TEXT NOT NULL,
+                    checked_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    status TEXT NOT NULL,
+                    written_rows INTEGER NOT NULL DEFAULT 0,
+                    latest_source_date TEXT,
+                    latest_database_date TEXT,
+                    error_message TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_stock_update_runs_stock
+                    ON stock_update_runs(stock_id, id);
                 CREATE TABLE IF NOT EXISTS update_logs (
                     id INTEGER PRIMARY KEY,
                     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -274,6 +286,35 @@ class StockDatabase:
             )
             connection.execute("INSERT INTO update_logs(source, row_count) VALUES (?, ?)", (source, len(records)))
         return len(records)
+
+    def record_stock_run(self, record: dict) -> None:
+        """Save every WebJob result, including no changes and failures."""
+        errors = record.get("errors") or []
+        message = "; ".join(str(x.get("reason", "")) for x in errors if isinstance(x, dict))
+        with self.connect() as connection:
+            connection.execute("""
+                INSERT INTO stock_update_runs (
+                    stock_id, status, written_rows, latest_source_date,
+                    latest_database_date, error_message
+                ) VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                record["stock_id"], record["status"], int(record.get("written_rows") or 0),
+                record.get("latest_source_date"), record.get("latest_database_date"), message,
+            ))
+
+    def latest_stock_run(self, stock_id: str) -> dict | None:
+        """Return latest automatic check for ticker, not a historic CSV import."""
+        with self.connect() as connection:
+            row = connection.execute("""
+                SELECT checked_at, status, written_rows, latest_source_date,
+                       latest_database_date, error_message
+                FROM stock_update_runs WHERE stock_id = ? ORDER BY id DESC LIMIT 1
+            """, (stock_id,)).fetchone()
+        if row is None:
+            return None
+        keys = ("checked_at", "status", "written_rows", "latest_source_date",
+                "latest_database_date", "error_message")
+        return dict(zip(keys, row))
 
     def list_available_stocks(self) -> list[dict]:
         """Stock options come from actual persisted daily_prices, not deployed CSVs."""

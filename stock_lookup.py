@@ -21,7 +21,7 @@ from database import StockDatabase
 
 LOGGER = logging.getLogger(__name__)
 TAIPEI = ZoneInfo("Asia/Taipei")
-STOCK_ID_RE = re.compile(r"(?:[0-9]{4}|[0-9]{6}|[0-9]{5}[A-Z])")
+STOCK_ID_RE = re.compile(r"(?:[0-9]{4}|00[0-9]{3}|[0-9]{6}|[0-9]{5}[A-Z])")
 DISPLAY_COLUMNS = {
     "date": "日期", "stock_id": "股票代號", "stock_name": "股票名稱",
     "open": "開盤價", "high": "最高價", "low": "最低價",
@@ -36,6 +36,82 @@ def validate_stock_id(stock_id: str) -> str:
         raise ValueError("請輸入 4 至 6 位數的 TWSE 股票或數字型 ETF 代號，例如 2327、2330、009816。")
     return stock_id
 
+
+
+# NAME_SEARCH_V1
+TWSE_CATALOG_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+
+
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
+def _twse_search_catalog() -> list[dict[str, str]]:
+    """Read TWSE's latest-day listed securities catalog, not intraday quotes."""
+    response = requests.get(TWSE_CATALOG_URL, timeout=(5, 20),
+                            headers={"User-Agent": "StockSignal/1.0", "Accept": "application/json"})
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise ValueError("TWSE 商品目錄格式錯誤")
+    result = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("Code") or "").strip().upper()
+        name = str(item.get("Name") or "").strip()
+        if STOCK_ID_RE.fullmatch(code) and name:
+            result[code] = {"stock_id": code, "stock_name": name}
+    if not result:
+        raise ValueError("TWSE 商品目錄沒有有效商品")
+    return list(result.values())
+
+
+def search_stock_candidates(query: str, limit: int = 12) -> list[dict[str, str]]:
+    """Find code/name substrings in the current TWSE catalog and local SQLite.
+
+    A catalog failure does not stop lookups already present in SQLite.
+    A missing/expired instrument is never fabricated or silently padded.
+    """
+    from unicodedata import normalize
+    term = normalize("NFKC", str(query)).strip().upper().replace("臺", "台")
+    if not term:
+        return []
+    known = {}
+    try:
+        for row in _twse_search_catalog():
+            known[row["stock_id"]] = row
+    except (requests.RequestException, ValueError) as exc:
+        LOGGER.warning("TWSE search catalog unavailable: %s", exc)
+    for row in StockDatabase().list_available_stocks():
+        known.setdefault(row["stock_id"], {
+            "stock_id": row["stock_id"], "stock_name": row["stock_name"]
+        })
+    found = []
+    for row in known.values():
+        name = normalize("NFKC", row["stock_name"]).upper().replace("臺", "台")
+        if term in name or term in row["stock_id"].upper():
+            priority = (0 if term == row["stock_id"] or term == name else
+                        1 if row["stock_id"].startswith(term) or name.startswith(term) else 2)
+            found.append((priority, row["stock_id"], row))
+    return [r for _, _, r in sorted(found)[:limit]]
+
+
+def resolve_stock_query(query: str) -> str:
+    """Return a supported stock code; ambiguous names require user selection."""
+    text = str(query).strip().upper()
+    if STOCK_ID_RE.fullmatch(text):
+        return text
+    # Allow '2327 國巨' from a suggestion.
+    code = text.split(" ", 1)[0]
+    if STOCK_ID_RE.fullmatch(code):
+        return code
+    found = search_stock_candidates(text, limit=50)
+    exact = [row for row in found if row["stock_name"].upper() == text]
+    if len(exact) == 1:
+        return exact[0]["stock_id"]
+    if len(found) == 1:
+        return found[0]["stock_id"]
+    if len(found) > 1:
+        raise ValueError("有多檔符合的股票，請先點選下方建議項目。")
+    raise ValueError("找不到相符的 TWSE 上市股票或 ETF，請確認名稱或代號。")
 
 def date_window(days: int, today: date | None = None) -> tuple[date, date]:
     if days not in (90, 180, 365):
@@ -449,15 +525,53 @@ def render_stock_lookup() -> None:
         with st.container(key="lookup_hero"):
             st.html("""<h1>探索股票，掌握市場趨勢</h1>
               <p>搜尋 TWSE 上市股票與 ETF · 查詢已公布日交易資料 · 自動同步至 SQLite</p>""")
-            with st.form("twse_stock_lookup_form", clear_on_submit=False, border=False):
+            with st.container(key="twse_stock_lookup_form"):
                 st.markdown("#### ↓ 搜尋上市股票或 ETF ↓")
                 entered = st.text_input(
                     "股票代號",
                     value=st.session_state.get("twse_lookup_id", ""),
-                    placeholder="輸入代號，例如 2330、2603、009816、00990A",
+                    placeholder="輸入國巨、國泰、2330、009816、00990A…",
                     max_chars=10,
                     label_visibility="collapsed",
                 )
+                # 使用者更改搜尋文字時，恢復相關搜尋
+                if entered.strip() != st.session_state.get(
+                    "lookup_chosen_query", ""
+                ):
+                    st.session_state.pop("lookup_chosen_query", None)
+
+                candidate_rows = (
+                    search_stock_candidates(entered, limit=8)
+                    if entered.strip()
+                    and not st.session_state.get("lookup_chosen_query")
+                    else []
+                )
+
+                candidate_code = None
+
+                if candidate_rows:
+                    suggestions_area = st.empty()
+
+                    with suggestions_area.container():
+                        st.caption("符合的上市股票／ETF：點選即可查詢")
+
+                        for item in candidate_rows:
+                            label = f'{item["stock_id"]}　{item["stock_name"]}'
+
+                            if st.button(
+                                label,
+                                key=f'lookup_suggest_{item["stock_id"]}',
+                                use_container_width=True,
+                            ):
+                                candidate_code = item["stock_id"]
+
+                                st.session_state["lookup_chosen_query"] = (
+                                    entered.strip()
+                                )
+
+                                # 點選後立即收起建議清單
+                                suggestions_area.empty()
+                                
                 range_col, button_col = st.columns([1, 1.5], vertical_alignment="bottom")
                 with range_col:
                     days = st.selectbox(
@@ -467,14 +581,14 @@ def render_stock_lookup() -> None:
                         format_func=lambda x: {90: "最近 90 天", 180: "最近 180 天", 365: "最近一年"}[x],
                     )
                 with button_col:
-                    submitted = st.form_submit_button(
+                    submitted = st.button(
                         "查詢 TWSE 並同步到個股儀表板", type="primary", use_container_width=True,
                     )
             st.caption("資料來源：臺灣證券交易所 TWSE（盤後日交易資料，非即時報價）。僅支援資料來源可取得的代號。")
 
-        if submitted:
+        if submitted or candidate_code:
             try:
-                stock_id = validate_stock_id(entered)
+                stock_id = resolve_stock_query(candidate_code or entered)
                 with st.spinner(f"正在查詢 {stock_id} 的 TWSE 歷史資料，並同步至 SQLite…"):
                     result = fetch_and_store_stock(stock_id, days)
                 # Store the result only after successful completion; a failed search must not
