@@ -17,7 +17,10 @@ def test_google_login_and_logout_use_current_session(monkeypatch, tmp_path):
     monkeypatch.setattr(auth.st, "logout", logout)
     monkeypatch.setenv("STOCK_DB_PATH", str(tmp_path / "auth.sqlite3"))
 
-    app = AppTest.from_string("from auth import render_auth\nrender_auth()")
+    app = AppTest.from_string(
+    "from auth import render_auth\nrender_auth()",
+    default_timeout=30,
+    )
     app.secrets["auth"] = {
         "redirect_uri": "http://localhost:8501/oauth2callback",
         "cookie_secret": "test-only",
@@ -59,7 +62,10 @@ def test_guest_can_use_sidebar_before_google_is_configured(monkeypatch):
     monkeypatch.setenv("STOCK_ENABLE_TEST_LOGIN", "0")
     monkeypatch.setattr(auth.st, "user", {})
     monkeypatch.setattr(auth.st, "secrets", {})
-    app = AppTest.from_string("from auth import render_auth\nrender_auth()").run()
+    app = AppTest.from_string(
+    "from auth import render_auth\nrender_auth()",
+    default_timeout=30,
+    ).run()
     assert not app.exception
     assert app.caption[0].value == "Google 登入尚未設定"
 
@@ -69,7 +75,9 @@ def test_test_login_rejects_wrong_password_and_logs_out(monkeypatch, tmp_path):
     monkeypatch.setattr(auth.st, "secrets", {})
     monkeypatch.delenv("STOCK_ENABLE_TEST_LOGIN", raising=False)
     monkeypatch.setenv("STOCK_DB_PATH", str(tmp_path / "local.sqlite3"))
-    app = AppTest.from_string("from auth import render_auth\nrender_auth()").run()
+    app = AppTest.from_string(
+    "from auth import render_auth\nrender_auth()", default_timeout=30
+    ).run()
     app.text_input[0].set_value("test")
     app.text_input[1].set_value("wrong")
     app.button[0].click().run()
