@@ -17,7 +17,7 @@ from comparison import render_comparison
 from crawler import crawl
 from database import StockDatabase
 from home import DESIGN_TOKENS, render_home, render_login
-from stock_lookup import render_stock_lookup
+from stock_lookup import render_stock_lookup, export_table, excel_bytes
 
 
 DATA_DIR = Path(__file__).parent
@@ -459,6 +459,31 @@ def render_single_stock(stocks: dict[str, pd.DataFrame], stock_label: str | None
             use_container_width=True, height=ANALYSIS_PANEL_HEIGHT,
         )
 
+        # ===== 匯出目前畫面所選股票＋期間資料 =====
+    export_frame = export_table(filtered)
+    csv_bytes = export_frame.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+    xlsx_bytes = excel_bytes(export_frame)
+
+    csv_col, excel_col, note_col = st.columns([1, 1, 2], vertical_alignment="center")
+    with csv_col:
+        st.download_button(
+            "下載 CSV 檔",
+            data=csv_bytes,
+            file_name=f"{latest['stock_id']}_{start_date}_{end_date}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key=f"dashboard_csv_{latest['stock_id']}_{start_date}_{end_date}",
+        )
+    with excel_col:
+        st.download_button(
+            "下載 Excel 檔",
+            data=xlsx_bytes,
+            file_name=f"{latest['stock_id']}_{start_date}_{end_date}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=f"dashboard_excel_{latest['stock_id']}_{start_date}_{end_date}",
+        )
+
 
 def render_stock_picker(stocks: dict[str, pd.DataFrame]) -> None:
     with st.container(key="dashboard_filters"):
@@ -577,10 +602,14 @@ def main() -> None:
     inject_styles()
     scroll_to_top(st.session_state.pop("scroll_to_top", False))
     stock_label, date_slot = render_dashboard_toolbar(page)
-    stocks, errors = load_all_stocks()
     if page == "查詢股票":
-        render_stock_lookup()
-    elif page == "股票比較":
+        render_stock_lookup(
+            navigate=navigate,
+            available_stock_labels=list(STOCK_FILES),
+        )
+        return  # 查詢頁只顯示搜尋卡片，不載入行情、圖表與資料同步摘要。
+    stocks, errors = load_all_stocks()
+    if page == "股票比較":
         render_comparison(STOCK_FILES, read_stock_data, date_slot=date_slot)
     elif page == "條件選股":
         render_stock_picker(stocks)

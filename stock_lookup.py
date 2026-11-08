@@ -220,156 +220,71 @@ def excel_bytes(frame: pd.DataFrame) -> bytes:
 # Scoped styling for the lookup page; other pages are unaffected.
 LOOKUP_STYLE = """
 <style>
-/* ====================================
-   1. 股票摘要卡片：統一尺寸
-==================================== */
-
-.st-key-lookup_shell [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) {
-    align-items: stretch !important;
-}
-
-.st-key-lookup_shell [data-testid="stColumn"]:has([data-testid="stMetric"]) {
-    display: flex;
-    flex-direction: column;
-}
-
-.st-key-lookup_shell [data-testid="stMetric"] {
-    box-sizing: border-box;
-    width: 100%;
-    min-height: 145px !important;
-    height: 100%;
-    padding: 22px 24px !important;
-    border-radius: 18px !important;
-    background: #F6F8FA !important;
-    border: 1px solid #E3E8ED !important;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-}
-
-.st-key-lookup_shell [data-testid="stMetricValue"] {
-    font-size: 1.85rem !important;
-    font-weight: 650 !important;
-    font-variant-numeric: tabular-nums;
-}
-
-
-/* ====================================
-   2. 查詢區塊：新視覺設計
-==================================== */
-
+/* Only the stock lookup view; does not affect the other dashboard tabs. */
+.st-key-lookup_shell { margin: .65rem auto 0; width: 100%; }
 .st-key-lookup_shell .st-key-lookup_hero {
-    background: linear-gradient(
-        135deg,
-        #F8FAFC 0%,
-        #EDF3F7 100%
-    ) !important;
-
-    border: 1px solid #DFE7ED !important;
-    border-radius: 24px !important;
-    padding: 36px !important;
+  background: linear-gradient(125deg, #f9fbfd 0%, #eaf1f6 100%) !important;
+  border: 1px solid #dce5eb !important;
+  border-radius: 24px !important;
+  padding: clamp(22px, 3vw, 40px) !important;
+  box-shadow: 0 14px 34px rgba(54, 84, 103, .07);
+  gap: 1rem !important;
 }
-
-/* 大搜尋框 */
-
+.st-key-lookup_hero h1 {
+  font-size: clamp(1.8rem, 3vw, 2.35rem) !important;
+  font-weight: 700 !important; color: #172c3a !important;
+  margin: 0 0 .5rem !important; padding: 0 !important;
+}
+.st-key-lookup_hero .lookup-lede {
+  font-size: 1rem !important; color: #587081 !important;
+  margin: 0 !important; line-height: 1.65;
+}
 .st-key-lookup_hero [data-testid="stTextInput"] input {
-    min-height: 62px !important;
-    font-size: 1.3rem !important;
-    font-weight: 550 !important;
-
-    background: #FFFFFF !important;
-    color: #172433 !important;
-
-    border-radius: 14px !important;
-    padding: 14px 18px !important;
+  min-height: 58px !important; background: #fff !important;
+  color: #172c3a !important; font-size: 1.12rem !important;
+  border-radius: 14px !important; padding: 12px 17px !important;
 }
-
-/* 搜尋框獲得焦點 */
-
 .st-key-lookup_hero [data-testid="stTextInput"] input:focus {
-    outline: 2px solid #4F7083 !important;
-    outline-offset: 1px;
+  outline: 2px solid #4f7083 !important; outline-offset: 1px;
 }
-
-/* 查詢按鈕 */
-
-.st-key-lookup_shell .st-key-lookup_hero
-[data-testid="stFormSubmitButton"] button {
-
-    background: #4F7083 !important;
-    border: 1px solid #4F7083 !important;
-    color: #FFFFFF !important;
-
-    min-height: 55px !important;
-    border-radius: 14px !important;
-
-    font-weight: 650 !important;
-    font-size: 1.05rem !important;
-
-    opacity: 1 !important;
-    transition: all 0.2s ease;
-}
-
-/* 確保按鈕內的文字和圖示是白色 */
-
-.st-key-lookup_shell .st-key-lookup_hero
-[data-testid="stFormSubmitButton"] button p,
-.st-key-lookup_shell .st-key-lookup_hero
-[data-testid="stFormSubmitButton"] button span,
-.st-key-lookup_shell .st-key-lookup_hero
-[data-testid="stFormSubmitButton"] button svg {
-    color: #FFFFFF !important;
-    fill: currentColor;
-}
-
-/* 滑鼠移入按鈕 */
-
-.st-key-lookup_shell .st-key-lookup_hero
-[data-testid="stFormSubmitButton"] button:hover {
-    background: #38596B !important;
-    border-color: #38596B !important;
-    color: #FFFFFF !important;
-}
-
-/* 鍵盤操作的焦點提示 */
-
-.st-key-lookup_shell .st-key-lookup_hero
-[data-testid="stFormSubmitButton"] button:focus-visible {
-    outline: 3px solid #91BBD0 !important;
-    outline-offset: 2px;
-}
-
-/* 小螢幕適配 */
-
-@media (max-width: 768px) {
-    .st-key-lookup_shell .st-key-lookup_hero {
-        padding: 20px !important;
-    }
-
-    .st-key-lookup_shell [data-testid="stMetric"] {
-        min-height: 125px !important;
-        padding: 16px !important;
-    }
-}
-/* 查詢資料期間：下拉選單改成純白色 */
 .st-key-lookup_hero [data-testid="stSelectbox"] [data-baseweb="select"] > div,
 .st-key-lookup_hero [data-testid="stSelectbox"] [role="combobox"] {
-    background: #FFFFFF !important;
-    background-color: #FFFFFF !important;
-    color: #172433 !important;
-    border-radius: 14px !important;
+  min-height: 51px !important; background: #fff !important;
+  color: #243846 !important; border-radius: 13px !important;
 }
-
-/* 下拉選單內的箭頭 */
-.st-key-lookup_hero [data-testid="stSelectbox"] svg {
-    color: #172433 !important;
+/* Style only the primary search button, never suggestion options. */
+.st-key-lookup_hero [data-testid="stButton"] button[kind="primary"],
+.st-key-lookup_hero [data-testid="stButton"] button[data-testid="stBaseButton-primary"] {
+  min-height: 51px !important; background: #4f7083 !important;
+  border: 1px solid #4f7083 !important; border-radius: 13px !important;
+  color: #fff !important; -webkit-text-fill-color: #fff !important;
+  font-size: 1rem !important; font-weight: 650 !important;
 }
-/* 查詢資料期間：白色背景 */
-.st-key-lookup_hero [data-testid="stSelectbox"] [data-baseweb="select"] > div {
-    background-color: #FFFFFF !important;
-    border: 1px solid #E3E8ED !important;
-    border-radius: 14px !important;
-    color: #172433 !important;
+.st-key-lookup_hero [data-testid="stButton"] button[kind="primary"] *,
+.st-key-lookup_hero [data-testid="stButton"] button[data-testid="stBaseButton-primary"] * {
+  color: #fff !important; -webkit-text-fill-color: #fff !important;
+  fill: currentColor !important; opacity: 1 !important;
+}
+.st-key-lookup_hero [data-testid="stButton"] button[kind="primary"]:hover,
+.st-key-lookup_hero [data-testid="stButton"] button[data-testid="stBaseButton-primary"]:hover {
+  background: #39596a !important; border-color: #39596a !important;
+}
+.st-key-lookup_hero [data-testid="stButton"] button:focus-visible {
+  outline: 3px solid #9dc0d1 !important; outline-offset: 2px;
+}
+.st-key-lookup_suggestions { margin: 0 0 .6rem; }
+.st-key-lookup_suggestions [data-testid="stButton"] button {
+  background: #fff !important; border: 1px solid #dde5eb !important;
+  color: #253d4d !important; border-radius: 12px !important;
+  min-height: 43px !important; font-weight: 500 !important;
+  justify-content: flex-start !important; text-align: left !important;
+}
+.st-key-lookup_suggestions [data-testid="stButton"] button:hover {
+  background: #f1f7fa !important; border-color: #a4bcc9 !important;
+}
+@media (max-width: 620px) {
+  .st-key-lookup_hero [data-testid="stHorizontalBlock"] { flex-wrap: wrap; }
+  .st-key-lookup_hero [data-testid="stColumn"] { min-width: 100%; }
 }
 </style>
 """
@@ -518,229 +433,119 @@ def interactive_price_chart(chart_data: pd.DataFrame):
         .properties(height=340)
     )
 
-def _queue_lookup_candidate(stock_id: str, entered_query: str) -> None:
-    """Remember a clicked candidate without mutating the live Streamlit layout."""
-    st.session_state["lookup_pending_candidate"] = stock_id
-    st.session_state["lookup_chosen_query"] = entered_query
+def _lookup_submit_request(code: str | None = None) -> None:
+    """Queue the selected security without mutating an active widget tree."""
+    query = code if code is not None else st.session_state.get("lookup_search_input", "")
+    st.session_state["lookup_pending_request"] = str(query).strip()
+    st.session_state["lookup_suggestions_hidden"] = str(
+        st.session_state.get("lookup_search_input", "")
+    ).strip()
 
 
-def render_stock_lookup() -> None:
-    """Modern search UI backed by the EXISTING TWSE-to-SQLite pipeline."""
-    st.html(LOOKUP_STYLE)
-    with st.container(key="lookup_shell"):
-        with st.container(key="lookup_hero"):
-            st.html("""<h1>探索股票，掌握市場趨勢</h1>
-              <p>搜尋 TWSE 上市股票與 ETF · 查詢已公布日交易資料 · 自動同步至 SQLite</p>""")
-            with st.container(key="twse_stock_lookup_form"):
-                st.markdown("#### ↓ 搜尋上市股票或 ETF ↓")
-                entered = st.text_input(
-                    "股票代號",
-                    value=st.session_state.get("twse_lookup_id", ""),
-                    placeholder="輸入國巨、國泰、2330、009816、00990A…",
-                    max_chars=10,
-                    label_visibility="collapsed",
+def render_stock_lookup(navigate=None, available_stock_labels: list[str] | None = None) -> None:
+    """A search-only screen. Show the selected instrument on the stock dashboard."""
+    # Run the queued action before building any Streamlit layout, avoiding
+    # duplicate keys / transient UI cleanup / front-end ElementNode errors.
+    pending = st.session_state.pop("lookup_pending_request", None)
+    if pending:
+        try:
+            stock_id = resolve_stock_query(pending)
+            days = st.session_state.get("lookup_search_days", 180)
+            with st.spinner(f"正在查詢 {stock_id} 的 TWSE 資料並同步 SQLite…"):
+                result = fetch_and_store_stock(stock_id, days)
+            if not result.get("source_rows"):
+                st.session_state["lookup_search_error"] = (
+                    result.get("warning") or "TWSE 未回傳有效交易資料，未切換個股。"
                 )
-                # 使用者更改搜尋文字時，恢復相關搜尋
-                if entered.strip() != st.session_state.get(
-                    "lookup_chosen_query", ""
-                ):
-                    st.session_state.pop("lookup_chosen_query", None)
-
-                candidate_rows = (
-                    search_stock_candidates(entered, limit=8)
-                    if entered.strip()
-                    and not st.session_state.get("lookup_chosen_query")
-                    else []
-                )
-
-                # Callback state is applied *before* Streamlit renders the new page.
-                # Never remove an already-rendered widget tree in the same event.
-                candidate_code = st.session_state.pop("lookup_pending_candidate", None)
-                if candidate_rows:
-                    with st.container(key="lookup_suggestions", height=260, border=False):
-                        st.caption("符合的上市股票／ETF：點選即可查詢")
-                        for item in candidate_rows:
-                            st.button(
-                                f'{item["stock_id"]}　{item["stock_name"]}',
-                                key=f'lookup_suggest_{item["stock_id"]}',
-                                use_container_width=True,
-                                on_click=_queue_lookup_candidate,
-                                args=(item["stock_id"], entered.strip()),
-                            )
-
-                range_col, button_col = st.columns([1, 1.5], vertical_alignment="bottom")
-                with range_col:
-                    days = st.selectbox(
-                        "查詢資料期間", [90, 180, 365],
-                        index=[90, 180, 365].index(st.session_state.get("twse_lookup_days", 180))
-                            if st.session_state.get("twse_lookup_days", 180) in (90, 180, 365) else 1,
-                        format_func=lambda x: {90: "最近 90 天", 180: "最近 180 天", 365: "最近一年"}[x],
+            else:
+                # The downloaded stock may not be in the old toolbar options yet.
+                # Read the newly persisted label from SQLite before the next rerun.
+                matches = [
+                    item for item in StockDatabase().list_available_stocks()
+                    if item["stock_id"] == stock_id
+                ]
+                if not matches:
+                    raise RuntimeError("股票資料未出現在 SQLite，無法開啟個股儀表板。")
+                stock_label = f'{stock_id} {matches[0]["stock_name"]}'.strip()
+                # Keep the label synchronized with the CSV-based dashboard entry
+                # when it uses the same stock ID but an older display name.
+                if available_stock_labels:
+                    stock_label = next(
+                        (label for label in available_stock_labels
+                         if label.split(" ", 1)[0] == stock_id),
+                        stock_label,
                     )
-                with button_col:
-                    submitted = st.button(
-                        "查詢 TWSE 並同步到個股儀表板", type="primary", use_container_width=True,
-                    )
-            st.caption("資料來源：臺灣證券交易所 TWSE（盤後日交易資料，非即時報價）。僅支援資料來源可取得的代號。")
-
-        if submitted or candidate_code:
-            try:
-                stock_id = resolve_stock_query(candidate_code or entered)
-                with st.spinner(f"正在查詢 {stock_id} 的 TWSE 歷史資料，並同步至 SQLite…"):
-                    result = fetch_and_store_stock(stock_id, days)
-                # Store the result only after successful completion; a failed search must not
-                # accidentally show the preceding stock as the new search result.
                 st.session_state["twse_lookup_id"] = stock_id
                 st.session_state["twse_lookup_days"] = days
                 st.session_state["twse_lookup_result"] = result
                 cached_stock_prices.clear()
-            except (ValueError, RuntimeError, OSError, requests.RequestException) as exc:
-                LOGGER.warning("TWSE manual lookup failed: %s", exc)
-                st.error(f"查詢失敗：{exc}")
-                return
-
-        stock_id = st.session_state.get("twse_lookup_id")
-        if not stock_id:
-            st.info("在上方輸入股票代號，按下「查詢並同步」即可查看行情、走勢與歷史資料。")
-            return
-
-        result = st.session_state.get("twse_lookup_result")
-        if submitted and result:
-            if result.get("warning"):
-                st.warning(result["warning"])
-            else:
-                st.success(
-                    f"{stock_id} 同步完成：來源共 {result['source_rows']} 個交易日，"
-                    f"本次新增 {result['inserted_rows']} 筆至 SQLite。"
-                )
-
-        try:
-            data = read_stock_prices(stock_id, st.session_state.get("twse_lookup_days", 180))
-        except (OSError, ValueError) as exc:
-            st.error(f"SQLite 讀取失敗：{exc}")
-            return
-        if data.empty:
-            st.info("資料庫目前沒有此代號的交易紀錄。可能尚未公布、代號不支援或來源沒有回傳資料。")
-            return
-
-        data = data.sort_values("date").reset_index(drop=True)
-        latest = data.iloc[-1]
-        stock_name = _lookup_stock_name(data, stock_id)
-        change, change_pct = _lookup_change(data)
-        with st.container(key="lookup_result_header"):
-            st.html(
-                f"<h2>{escape(stock_name)} <span style='color:#717885;font-size:1rem'>"
-                f"{escape(stock_id)}</span></h2>"
-                f"<p>最後交易日：{latest['date']:%Y-%m-%d} · 已收錄 {len(data)} 筆 · TWSE 盤後資料</p>"
-            )
-
-        first, second, third, fourth = st.columns(4)
-        price_delta = None if change is None else (
-            f"{change:+,.2f} ({change_pct:+.2f}%)" if change_pct is not None else f"{change:+,.2f}"
-        )
-        first.metric("最新收盤價", f"{float(latest['close']):,.2f} 元", price_delta, delta_color="inverse")
-        second.metric("區間最高價", f"{float(data['high'].max()):,.2f} 元")
-        third.metric("區間最低價", f"{float(data['low'].min()):,.2f} 元")
-        fourth.metric("最新成交量", f"{int(latest['trade_volume']):,} 股")
-
-        tab_chart, tab_table = st.tabs(["走勢分析", "歷史交易資料"])
-        with tab_chart:
-            # CHART_CONFIRM_V3
-            with st.form("lookup_chart_settings_form", border=True):
-                st.markdown("#### 自訂圖表顯示")
-                period_col, window_col, confirm_col = st.columns(
-                    [2.4, 2.4, 1], vertical_alignment="bottom"
-                )
-                with period_col:
-                    requested_period = st.selectbox(
-                        "統計週期", ["每日", "每 3 個交易日", "每週", "每月"],
-                        key="lookup_chart_period_draft",
-                        help="每月收盤價為當月最後交易日價格；成交量為當月總量。",
-                    )
-                with window_col:
-                    requested_window = st.selectbox(
-                        "顯示範圍", ["全部已查詢資料", "最近 30 天", "最近 90 天", "最近 180 天"],
-                        key="lookup_chart_window_draft",
-                    )
-                with confirm_col:
-                    confirmed = st.form_submit_button(
-                        "確定", type="primary", use_container_width=True
-                    )
-            if confirmed:
-                st.session_state["lookup_chart_period_applied"] = requested_period
-                st.session_state["lookup_chart_window_applied"] = requested_window
-            chart_period = st.session_state.get("lookup_chart_period_applied", "每日")
-            chart_window = st.session_state.get("lookup_chart_window_applied", "全部已查詢資料")
-
-            chart_source = data.copy()
-            if chart_window != "全部已查詢資料":
-                window_days = {"最近 30 天": 30, "最近 90 天": 90, "最近 180 天": 180}[chart_window]
-                cutoff = pd.Timestamp(chart_source["date"].max()) - pd.Timedelta(days=window_days)
-                chart_source = chart_source[chart_source["date"] >= cutoff].copy()
-            if chart_source.empty:
-                st.info("選定範圍內沒有資料，請調整顯示範圍後按『確定』。")
-            else:
-                import altair as alt
-
-                chart_data = _lookup_aggregate_chart_data(chart_source, chart_period)
-                chart_data = chart_data.sort_values("date").copy()
-                # Important: for monthly, use real month categories, not a temporal axis
-                # whose ticks Streamlit/Altair may label as weeks regardless of data frequency.
-                if chart_period == "每月":
-                    chart_data["period_label"] = chart_data["date"].dt.strftime("%Y-%m")
-                elif chart_period == "每週":
-                    chart_data["period_label"] = chart_data["date"].dt.strftime("%Y-%m-%d")
-                elif chart_period == "每 3 個交易日":
-                    chart_data["period_label"] = chart_data["date"].dt.strftime("%m/%d")
+                if navigate is not None:
+                    navigate("個股儀表板", stock_label)
                 else:
-                    chart_data["period_label"] = chart_data["date"].dt.strftime("%m/%d")
-                chart_data["close"] = pd.to_numeric(chart_data["close"], errors="coerce")
-                chart_data["trade_volume"] = pd.to_numeric(chart_data["trade_volume"], errors="coerce")
-                ordered_labels = chart_data["period_label"].tolist()
-                axis = alt.Axis(title=None, labelAngle=-35, labelLimit=95, labelOverlap=True)
-                tooltip = [
-                    alt.Tooltip("period_label:N", title="期間"),
-                    alt.Tooltip("close:Q", title="期末收盤價", format=",.2f"),
-                    alt.Tooltip("trade_volume:Q", title="期間成交股數", format=",.0f"),
-                ]
-                x = alt.X("period_label:N", sort=ordered_labels, axis=axis)
-                st.subheader("收盤價走勢")
+                    st.session_state["active_page"] = "個股儀表板"
+                    st.session_state["selected_stock"] = stock_label
+                    st.session_state["scroll_to_top"] = True
+                st.rerun()
+        except (ValueError, RuntimeError, OSError, requests.RequestException) as exc:
+            LOGGER.warning("TWSE stock lookup failed: %s", exc)
+            st.session_state["lookup_search_error"] = f"查詢失敗：{exc}"
 
-                st.altair_chart(
-                    interactive_price_chart(chart_data),
+    st.html(LOOKUP_STYLE)
+    with st.container(key="lookup_shell"):
+        with st.container(key="lookup_hero"):
+            st.html("""
+                <h1>探索股票，掌握市場趨勢</h1>
+                <p class="lookup-lede">輸入股票中文名稱或代號，查詢 TWSE 已公布的日交易資料。</p>
+            """)
+            st.markdown("**搜尋上市股票或 ETF**")
+            entered = st.text_input(
+                "股票名稱或代號",
+                key="lookup_search_input",
+                placeholder="例如：國巨、國泰、2330、0050、009816…",
+                label_visibility="collapsed",
+                max_chars=32,
+            )
+            typed = entered.strip()
+            hidden = st.session_state.get("lookup_suggestions_hidden")
+            if hidden is not None and hidden != typed:
+                st.session_state.pop("lookup_suggestions_hidden", None)
+            if typed and st.session_state.get("lookup_suggestions_hidden") != typed:
+                try:
+                    suggestions = search_stock_candidates(typed, limit=8)
+                except (ValueError, OSError, RuntimeError, requests.RequestException) as exc:
+                    LOGGER.warning("Stock suggestions unavailable: %s", exc)
+                    suggestions = []
+                    st.caption("相關搜尋暫時無法載入，仍可使用股票代號查詢。")
+                if suggestions:
+                    with st.container(key="lookup_suggestions", height=244, border=False):
+                        st.caption("相關股票／ETF・點選後直接前往個股儀表板")
+                        for item in suggestions:
+                            st.button(
+                                f'{item["stock_id"]}　{item["stock_name"]}',
+                                key=f'lookup_suggest_{item["stock_id"]}',
+                                use_container_width=True,
+                                on_click=_lookup_submit_request,
+                                args=(item["stock_id"],),
+                            )
+
+            range_col, button_col = st.columns([1, 1.5], vertical_alignment="bottom")
+            with range_col:
+                st.selectbox(
+                    "查詢資料期間", [90, 180, 365],
+                    index=1,
+                    format_func=lambda value: {
+                        90: "最近 90 天", 180: "最近 180 天", 365: "最近一年"
+                    }[value],
+                    key="lookup_search_days",
+                )
+            with button_col:
+                st.button(
+                    "查詢 TWSE 並前往個股儀表板",
+                    type="primary",
                     use_container_width=True,
+                    on_click=_lookup_submit_request,
                 )
-                st.subheader("成交量")
-                volume_chart = alt.Chart(chart_data).mark_bar().encode(
-                    x=x,
-                    y=alt.Y("trade_volume:Q", title="成交股數"),
-                    tooltip=tooltip,
-                ).properties(height=260)
-                st.altair_chart(volume_chart, use_container_width=True)
-                st.caption(
-                    f"目前顯示：{chart_period}／{chart_window}。收盤價取期間最後交易日，"
-                    "成交量為期間加總；資料來源為 TWSE 每日盤後資料（非每小時行情）。"
-                )
-        with tab_table:
-            st.subheader("每日交易紀錄")
-            table = export_table(data).iloc[::-1].reset_index(drop=True)
-            st.dataframe(table, hide_index=True, use_container_width=True, height=430)
-
-        st.divider()
-        left, right, info = st.columns([1, 1, 2], vertical_alignment="center")
-        table = export_table(data).iloc[::-1].reset_index(drop=True)
-        csv_bytes = table.to_csv(index=False).encode("utf-8-sig")
-        with left:
-            st.download_button(
-                "下載 CSV", data=csv_bytes, file_name=f"TWSE_{stock_id}_daily.csv",
-                mime="text/csv", use_container_width=True,
-            )
-        with right:
-            st.download_button(
-                "下載 Excel", data=cached_excel_export(csv_bytes),
-                file_name=f"TWSE_{stock_id}_daily.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-        with info:
-            st.caption("下載內容與上方交易明細一致；已透過 SQLite 保留交易紀錄。")
-
+            st.caption("資料來源：臺灣證券交易所 TWSE（盤後日交易資料，非即時報價）。")
+            error = st.session_state.pop("lookup_search_error", None)
+            if error:
+                st.error(error)
