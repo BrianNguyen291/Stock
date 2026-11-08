@@ -331,12 +331,23 @@ jobs:
             if ($configuredTimezone -and $configuredTimezone -ne 'UTC') {
               throw "Expected UTC schedule timezone, found: $configuredTimezone"
             }
+            # Enable Always On only for the explicitly approved TEST slot.
+            # Azure will reject this setting on unsupported App Service plans.
+            az webapp config set `
+              --resource-group $env:AZURE_RESOURCE_GROUP `
+              --name $env:AZURE_WEBAPP_NAME `
+              --slot test `
+              --always-on true `
+              --output none
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Failed to enable Always On on Azure TEST slot; schedule remains disabled'
+            }
             $webConfig = az webapp config show `
               --resource-group $env:AZURE_RESOURCE_GROUP `
               --name $env:AZURE_WEBAPP_NAME `
               --slot test --output json | ConvertFrom-Json
             if ($LASTEXITCODE -ne 0 -or -not $webConfig.alwaysOn) {
-              throw 'Always On must be enabled before enabling the WebJob schedule'
+              throw 'Always On verification failed; schedule remains disabled'
             }
             $disableSchedule = '0'
           }
