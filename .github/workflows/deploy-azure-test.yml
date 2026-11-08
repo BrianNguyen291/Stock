@@ -313,17 +313,45 @@ jobs:
       
       - name: Configure stock WebJob on test slot
         shell: pwsh
+        env:
+          # Repository Settings > Secrets and variables > Actions > Variables.
+          # Must remain disabled until deployment owner confirms Always On and UTC.
+          STOCK_WEBJOB_SCHEDULE_ENABLED: ${{ vars.STOCK_WEBJOB_SCHEDULE_ENABLED }}
         run: |
+          $enabled = $env:STOCK_WEBJOB_SCHEDULE_ENABLED -eq 'true'
+          $disableSchedule = '1'
+          if ($enabled) {
+            # Use UTC because settings.job specifies 09:30 UTC = 17:30 Taipei.
+            $settings = az webapp config appsettings list `
+              --resource-group $env:AZURE_RESOURCE_GROUP `
+              --name $env:AZURE_WEBAPP_NAME `
+              --slot test --output json | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot read Azure time zone settings' }
+            $configuredTimezone = ($settings | Where-Object { $_.name -eq 'WEBSITE_TIME_ZONE' } | Select-Object -First 1).value
+            if ($configuredTimezone -and $configuredTimezone -ne 'UTC') {
+              throw "Expected UTC schedule timezone, found: $configuredTimezone"
+            }
+            $webConfig = az webapp config show `
+              --resource-group $env:AZURE_RESOURCE_GROUP `
+              --name $env:AZURE_WEBAPP_NAME `
+              --slot test --output json | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or -not $webConfig.alwaysOn) {
+              throw 'Always On must be enabled before enabling the WebJob schedule'
+            }
+            $disableSchedule = '0'
+          }
+
           az webapp config appsettings set `
             --resource-group $env:AZURE_RESOURCE_GROUP `
             --name $env:AZURE_WEBAPP_NAME `
             --slot test `
-            --slot-settings WEBJOBS_DISABLE_SCHEDULE=1 STOCK_WEBJOB_ALLOWED_SLOT=test `
+            --slot-settings WEBJOBS_DISABLE_SCHEDULE=$disableSchedule STOCK_WEBJOB_ALLOWED_SLOT=test `
             --output none
 
           if ($LASTEXITCODE -ne 0) {
             throw 'Failed to configure stock WebJob on test slot'
           }
+          Write-Host "stock-update scheduled execution enabled: $enabled"
 
       - name: Verify Windows Web App test slot
         shell: pwsh
