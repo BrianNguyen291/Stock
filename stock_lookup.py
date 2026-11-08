@@ -518,6 +518,12 @@ def interactive_price_chart(chart_data: pd.DataFrame):
         .properties(height=340)
     )
 
+def _queue_lookup_candidate(stock_id: str, entered_query: str) -> None:
+    """Remember a clicked candidate without mutating the live Streamlit layout."""
+    st.session_state["lookup_pending_candidate"] = stock_id
+    st.session_state["lookup_chosen_query"] = entered_query
+
+
 def render_stock_lookup() -> None:
     """Modern search UI backed by the EXISTING TWSE-to-SQLite pipeline."""
     st.html(LOOKUP_STYLE)
@@ -547,31 +553,21 @@ def render_stock_lookup() -> None:
                     else []
                 )
 
-                candidate_code = None
-
+                # Callback state is applied *before* Streamlit renders the new page.
+                # Never remove an already-rendered widget tree in the same event.
+                candidate_code = st.session_state.pop("lookup_pending_candidate", None)
                 if candidate_rows:
-                    suggestions_area = st.empty()
-
-                    with suggestions_area.container():
+                    with st.container(key="lookup_suggestions", height=260, border=False):
                         st.caption("符合的上市股票／ETF：點選即可查詢")
-
                         for item in candidate_rows:
-                            label = f'{item["stock_id"]}　{item["stock_name"]}'
-
-                            if st.button(
-                                label,
+                            st.button(
+                                f'{item["stock_id"]}　{item["stock_name"]}',
                                 key=f'lookup_suggest_{item["stock_id"]}',
                                 use_container_width=True,
-                            ):
-                                candidate_code = item["stock_id"]
+                                on_click=_queue_lookup_candidate,
+                                args=(item["stock_id"], entered.strip()),
+                            )
 
-                                st.session_state["lookup_chosen_query"] = (
-                                    entered.strip()
-                                )
-
-                                # 點選後立即收起建議清單
-                                suggestions_area.empty()
-                                
                 range_col, button_col = st.columns([1, 1.5], vertical_alignment="bottom")
                 with range_col:
                     days = st.selectbox(

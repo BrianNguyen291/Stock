@@ -105,7 +105,7 @@ def fetch_with_retries(session, month, stock_id, attempts, retry_seconds):
     return [], last_error, attempts
 
 
-def update_one(session, stock_id, start, end, raw_dir, pending_dir, attempts, retry_seconds, request_delay, db=None, write_db=False):
+def update_one(session, stock_id, start, end, raw_dir, pending_dir, attempts, retry_seconds, request_delay, db=None, write_db=False, market_holidays=None):
     began = datetime.now(TAIPEI)
     record = {
         "stock_id": stock_id,
@@ -159,7 +159,9 @@ def update_one(session, stock_id, start, end, raw_dir, pending_dir, attempts, re
         elif not seen:
             record["status"] = "unverified_no_data"
         elif (end == datetime.now(TAIPEI).date()
-              and end.weekday() < 5 and record["latest_source_date"] < end.isoformat()):
+              and end.weekday() < 5
+              and end not in (market_holidays or set())
+              and record["latest_source_date"] < end.isoformat()):
             # Source has not confirmed *today's* published result.
             record["status"] = "not_published"
         elif write_db:
@@ -181,6 +183,25 @@ def update_one(session, stock_id, start, end, raw_dir, pending_dir, attempts, re
     return record
 
 
+def load_market_holidays(path: Path | None) -> set[date]:
+    """Load verified TWSE market closures from a user-maintained JSON file.
+
+    Expected JSON: {"source": "TWSE official holiday calendar URL", "dates": ["YYYY-MM-DD"]}.
+    No holiday dates are guessed. Missing file means no additional closures known.
+    """
+    if path is None:
+        return set()
+    config = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(config, dict) or not isinstance(config.get("dates"), list):
+        raise ValueError("休市日 JSON 需要 dates 陣列與官方來源")
+    if not str(config.get("source", "")).strip():
+        raise ValueError("休市日 JSON 必須填寫官方來源 source")
+    values = config["dates"]
+    if len(values) != len(set(values)):
+        raise ValueError("休市日 JSON 有重複日期")
+    return {date.fromisoformat(value) for value in values}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="台股增量更新（預設暫存 CSV；可明確開啟 SQLite 寫入）")
     parser.add_argument("--stocks-file", type=Path, default=Path("stocks.json"))
@@ -189,6 +210,8 @@ def main(argv=None):
     parser.add_argument("--start", type=parse_date, default=None)
     parser.add_argument("--end", type=parse_date, default=None)
     parser.add_argument("--lookback-days", type=int, default=40)
+    parser.add_argument("--market-holidays-file", type=Path, default=None,
+                        help="已核對 TWSE 官方休市日的 JSON；未提供時沿用平日判斷")
     parser.add_argument("--raw-dir", type=Path, default=Path("data/raw"))
     parser.add_argument("--pending-dir", type=Path, default=Path("data/pending"))
     parser.add_argument("--log-dir", type=Path, default=Path("logs"))
@@ -212,13 +235,14 @@ def main(argv=None):
     if args.write_db and args.db is None:
         parser.error("--write-db 必須搭配 --db 明確指定資料庫（避免誤寫正式庫）")
     db = StockDatabase(args.db) if args.write_db else None
+    market_holidays = load_market_holidays(args.market_holidays_file)
     reports = []
     # Plain session: exactly `attempts` outer calls, avoiding nested automatic retries.
     with requests.Session() as session:
         session.headers.update({"User-Agent": "Mozilla/5.0 (AcademicStockResearch/2.0)", "Accept": "application/json"})
         for idx, stock_id in enumerate(stocks):
             LOG.info("[%s/%s] 檢查股票 %s", idx + 1, len(stocks), stock_id)
-            record = update_one(session, stock_id, start, end, args.raw_dir, args.pending_dir, args.attempts, args.retry_seconds, args.delay, db=db, write_db=args.write_db)
+            record = update_one(session, stock_id, start, end, args.raw_dir, args.pending_dir, args.attempts, args.retry_seconds, args.delay, db=db, write_db=args.write_db, market_holidays=market_holidays)
             reports.append(record)
             if args.write_db:
                 db.record_stock_run(record)
