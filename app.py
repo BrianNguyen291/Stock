@@ -320,54 +320,46 @@ def scroll_to_top(requested: bool) -> None:
             )
 
 
-def render_status(stocks: dict[str, pd.DataFrame], errors: dict[str, str]) -> None:
-    database = StockDatabase()
-    successful = 0
-    status_rows = []
-    for label, path in STOCK_FILES.items():
-        data = stocks.get(label, pd.DataFrame())
-        latest = data["date"].max().strftime("%Y-%m-%d") if not data.empty else "-"
-        run = database.latest_stock_run(path.stem)
-        update = database.latest_update(path) if run is None else None
-        if label in errors:
-            state, detail = "失敗", errors[label]
-        elif run is not None:
-            state = {
-                "updated": "已同步", "no_new_rows": "無新資料",
-                "not_published": "尚未公布", "unverified_no_data": "來源無資料",
-                "partial_failure": "部分失敗", "failed": "失敗",
-            }.get(run["status"], run["status"])
-            detail = run["error_message"]
-            if run["status"] in ("updated", "no_new_rows"):
-                successful += 1
-        elif update is not None:
-            state, detail = "已匯入（未驗證 WebJob）", ""
-            successful += 1
-        else:
-            state, detail = "尚無執行紀錄", ""
-        updated_at = taiwan_time(run["checked_at"] if run else
-                                 update["updated_at"] if update else None)
-        status_rows.append({
-            "股票": label,
-            "狀態": state,
-            "最新交易日": latest,
-            "最後檢查（台灣）": updated_at,
-            "訊息": detail,
-        })
+def render_queried_stock_history() -> None:
+    """Clickable persistent stock-query list, stored in shared SQLite.
 
-    with st.expander(
-        f"資料同步摘要　{successful}/{len(STOCK_FILES)} 檔已同步",
-        expanded=False,
-    ):
-        st.dataframe(
-            pd.DataFrame(status_rows),
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "訊息": st.column_config.TextColumn("訊息", width="large"),
-            },
+    This is intentionally NOT a WebJob status table. Only securities that
+    have been successfully queried and enrolled appear here; historical CSV
+    imports do not silently count as user lookups.
+    """
+    db = StockDatabase()
+    queried_ids = db.list_auto_update_stocks()
+    known = {row["stock_id"]: row for row in db.list_available_stocks()}
+    entries = []
+    for stock_id in reversed(queried_ids):
+        stock = known.get(stock_id)
+        if stock is None:
+            continue
+        label = next(
+            (name for name in STOCK_FILES if name.split(" ", 1)[0] == stock_id),
+            f'{stock_id} {stock["stock_name"]}'.strip(),
         )
-        st.caption("資料狀態僅表示更新流程結果；選股條件請至「條件選股」查看。")
+        entries.append((stock_id, label, stock["latest_date"]))
+
+    st.markdown("### 曾查詢的股票")
+    st.caption("成功查詢過的股票會保存在此清單，點擊即可開啟對應個股儀表板；每天會由雲端排程持續更新。")
+    if not entries:
+        st.info("目前尚無查詢紀錄。請使用首頁或上方搜尋框查詢股票。")
+        return
+
+    with st.container(border=True):
+        for start in range(0, len(entries), 4):
+            columns = st.columns(4)
+            for column, (stock_id, label, latest_date) in zip(columns, entries[start:start + 4]):
+                with column:
+                    if st.button(
+                        label, key=f"queried_stock_open_{stock_id}",
+                        use_container_width=True,
+                    ):
+                        navigate(DASHBOARD_STOCK_PAGE, label)
+                        st.rerun()
+                    st.caption(f"最新交易日：{latest_date or '尚無資料'}")
+
 
 
 def render_kline_tab(filtered: pd.DataFrame, stock_label: str, ma_keys: list[str], bollinger_key: str) -> None:
@@ -641,7 +633,8 @@ def main() -> None:
         render_stock_picker(stocks)
     else:
         render_single_stock(stocks, stock_label, date_slot)
-    render_status(stocks, errors)
+    if page == DASHBOARD_STOCK_PAGE:
+        render_queried_stock_history()
 
 if __name__ == "__main__":
     main()
