@@ -416,7 +416,7 @@ def _render_cards(quotes, navigate):
 def render_home(stock_labels, quotes, navigate):
     """Stable homepage stock search with Chinese-name suggestions."""
     from database import StockDatabase
-    from stock_lookup import fetch_and_store_stock, resolve_stock_query, search_stock_candidates
+    from stock_lookup import perform_stock_search, search_stock_candidates
 
     def queue_search(query=None):
         query = str(query if query is not None else st.session_state.get("home_twse_search", "")).strip()
@@ -428,36 +428,12 @@ def render_home(stock_labels, quotes, navigate):
             st.session_state.get("home_twse_search", "")
         ).strip()
 
-    # Resolve pending search BEFORE generating any Streamlit layout components.
-    # This prevents st.empty().empty() and st.rerun() from changing a live widget tree.
+    # Use the SAME real TWSE query + SQLite auto-enrollment as dashboard searches.
     pending = st.session_state.pop("home_pending_search", None)
     if pending:
-        try:
-            stock_id = resolve_stock_query(pending)
-            with st.spinner(f"正在從 TWSE 查詢 {stock_id} 並同步 SQLite…"):
-                result = fetch_and_store_stock(stock_id, days=180)
-            if not result.get("source_rows"):
-                st.session_state["home_search_error"] = (
-                    result.get("warning") or "TWSE 未回傳有效交易資料，請檢查代號與來源。"
-                )
-            else:
-                available = [
-                    item for item in StockDatabase().list_available_stocks()
-                    if item["stock_id"] == stock_id
-                ]
-                if not available:
-                    raise RuntimeError("已取得資料但 SQLite 尚無此股票，請檢查資料庫設定。")
-                label = f'{stock_id} {available[0]["stock_name"]}'.strip()
-                st.session_state["twse_lookup_id"] = stock_id
-                st.session_state["twse_lookup_days"] = 180
-                st.session_state["twse_lookup_result"] = result
-                st.session_state["home_search_notice"] = (
-                    f'{label}：已同步 TWSE 資料（新增 {result["inserted_rows"]} 筆）'
-                )
-                navigate("個股儀表板", label)
-                st.rerun()
-        except (ValueError, RuntimeError, OSError, requests.RequestException) as exc:
-            st.session_state["home_search_error"] = f"股票查詢失敗：{exc}"
+        perform_stock_search(pending, navigate, days=180,
+                             error_key="home_search_error",
+                             available_stock_labels=stock_labels)
 
     st.html(PAGE_STYLE)
     with st.container(key="market_shell"):

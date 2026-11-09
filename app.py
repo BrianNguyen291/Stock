@@ -17,12 +17,12 @@ from comparison import render_comparison
 from crawler import crawl
 from database import StockDatabase
 from home import DESIGN_TOKENS, render_home, render_login
-from stock_lookup import render_stock_lookup, export_table, excel_bytes
+from stock_lookup import export_table, excel_bytes, perform_stock_search, search_stock_candidates
 
 
 DATA_DIR = Path(__file__).parent
 STOCK_FILE_PATTERN = re.compile(r"\d{4,6}")
-DASHBOARD_PAGES = ["個股儀表板", "查詢股票", "條件選股", "股票比較"]
+DASHBOARD_PAGES = ["個股儀表板", "條件選股", "股票比較"]
 DASHBOARD_STOCK_PAGE = DASHBOARD_PAGES[0]
 ANALYSIS_PANEL_HEIGHT = 416
 
@@ -538,22 +538,19 @@ def render_stock_picker(stocks: dict[str, pd.DataFrame]) -> None:
         st.rerun()
 
 
+def _queue_dashboard_search(query: str | None = None) -> None:
+    """Queue a TWSE search, avoiding network operations inside widget callbacks."""
+    entered = query if query is not None else st.session_state.get("dashboard_stock_query", "")
+    if str(entered).strip():
+        st.session_state["dashboard_pending_search"] = str(entered).strip()
+
+
 def render_dashboard_toolbar(page: str):
     stock_labels = list(STOCK_FILES)
-    selected_stock = st.session_state.get("selected_stock")
-    stock_index = None
-    if page == DASHBOARD_STOCK_PAGE and stock_labels:
-        stock_index = stock_labels.index(selected_stock) if selected_stock in STOCK_FILES else 0
-    search_key = f"dashboard_search_{page}"
-
-    def open_stock():
-        stock = st.session_state[search_key]
-        if stock:
-            navigate(DASHBOARD_STOCK_PAGE, stock)
-
+    selected_stock = st.session_state.get("selected_stock", "")
     date_slot = None
     with st.container(key="dashboard_toolbar"):
-        if page in ("條件選股", "查詢股票"):
+        if page == "條件選股":
             menu, search, navigation = st.columns([1, 3, 6], vertical_alignment="center")
         else:
             menu, search, dates, navigation = st.columns([1, 3, .55, 5.45], vertical_alignment="center")
@@ -563,11 +560,16 @@ def render_dashboard_toolbar(page: str):
                 st.button("首頁", on_click=navigate, args=("首頁",))
                 st.button("帳戶", on_click=navigate, args=("登入",))
                 update_requested = st.button("更新全部資料", icon=":material/refresh:")
-        stock_label = search.selectbox(
-            "搜尋股票", stock_labels, index=stock_index, key=search_key,
-            placeholder="搜尋股票名稱或代號", label_visibility="collapsed",
-            on_change=open_stock,
-        )
+        with search:
+            # Unlike the old selectbox, this accepts NEW codes and Chinese names.
+            # Press Enter or click a live suggestion to perform the same TWSE
+            # fetch-and-store function as the homepage.
+            st.text_input(
+                "搜尋股票", key="dashboard_stock_query",
+                placeholder="輸入股票名稱或代號，按 Enter 查詢",
+                label_visibility="collapsed", max_chars=32,
+                on_change=_queue_dashboard_search,
+            )
         if st.session_state.get("dashboard_page") != page:
             st.session_state["dashboard_page"] = page
         navigation.radio(
@@ -576,6 +578,22 @@ def render_dashboard_toolbar(page: str):
             on_change=lambda: navigate(st.session_state["dashboard_page"]),
         )
 
+    query = str(st.session_state.get("dashboard_stock_query") or "").strip()
+    if query and query != selected_stock and query != st.session_state.get("dashboard_suggestions_hidden_for"):
+        try:
+            candidates = search_stock_candidates(query, limit=6)
+        except (ValueError, OSError, RuntimeError, requests.RequestException):
+            candidates = []
+        if candidates:
+            with st.container(key="dashboard_search_suggestions", border=True):
+                st.caption("選擇股票／ETF，立即查詢 TWSE 並加入每日自動更新")
+                for candidate in candidates:
+                    st.button(
+                        f'{candidate["stock_id"]}　{candidate["stock_name"]}',
+                        key=f'dashboard_suggest_{candidate["stock_id"]}',
+                        on_click=_queue_dashboard_search,
+                        args=(candidate["stock_id"],),
+                    )
     if update_requested:
         with st.spinner(f"正在從證交所更新 {len(STOCK_FILES)} 檔股票資料，請稍候…"):
             updated, update_errors = update_all_stocks()
@@ -586,12 +604,21 @@ def render_dashboard_toolbar(page: str):
                 st.caption(f"{label}：{message}")
         else:
             st.success(f"已更新 {len(updated)} 檔股票。")
-    return stock_label, date_slot
+    return (selected_stock if selected_stock in STOCK_FILES else next(iter(STOCK_FILES), None)), date_slot
 
 
 def main() -> None:
+    # Complete any queued lookup before rendering UI. Success routes to the
+    # stock dashboard; failures rerun with a visible error and no stale overlay.
+    pending = st.session_state.pop("dashboard_pending_search", None)
+    if pending:
+        perform_stock_search(pending, navigate, days=180,
+                             available_stock_labels=list(STOCK_FILES))
     refresh_stock_files()
     page = st.session_state.get("active_page", "首頁")
+    if page == "查詢股票":  # backward-compatible return from an old session
+        navigate("個股儀表板")
+        page = "個股儀表板"
     if page == "首頁":
         render_home(list(STOCK_FILES), load_home_quotes(), navigate)
         return
@@ -601,13 +628,12 @@ def main() -> None:
 
     inject_styles()
     scroll_to_top(st.session_state.pop("scroll_to_top", False))
+    if st.session_state.get("dashboard_page") not in DASHBOARD_PAGES:
+        st.session_state["dashboard_page"] = page
     stock_label, date_slot = render_dashboard_toolbar(page)
-    if page == "查詢股票":
-        render_stock_lookup(
-            navigate=navigate,
-            available_stock_labels=list(STOCK_FILES),
-        )
-        return  # 查詢頁只顯示搜尋卡片，不載入行情、圖表與資料同步摘要。
+    error = st.session_state.pop("unified_search_error", None)
+    if error:
+        st.error(error)
     stocks, errors = load_all_stocks()
     if page == "股票比較":
         render_comparison(STOCK_FILES, read_stock_data, date_slot=date_slot)

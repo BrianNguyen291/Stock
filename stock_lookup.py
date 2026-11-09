@@ -222,6 +222,76 @@ def excel_bytes(frame: pd.DataFrame) -> bytes:
     return buffer.getvalue()
 
 
+# Shared TWSE search for the homepage and all dashboard pages.
+# One implementation means every entry point also enrolls a successfully
+# queried stock in the persistent, Azure-WebJob auto-update registry.
+SEARCH_WAIT_STYLE = """
+<style>
+@keyframes stock-wait-turn {to {transform: rotate(360deg)}}
+@keyframes stock-wait-move {0% {transform:translateX(-110%)} 100% {transform:translateX(310%)}}
+.stock-wait-overlay {position:fixed;inset:0;z-index:999999;
+ background:rgba(21,36,49,.23);backdrop-filter:blur(2px);
+ display:flex;justify-content:center;align-items:center;pointer-events:auto;}
+.stock-wait-card {background:#fff;border:1px solid #dce5eb;border-radius:22px;
+ box-shadow:0 18px 60px rgba(20,34,46,.18);width:min(390px,86vw);
+ padding:28px 30px;text-align:center;color:#223a49;font-family:inherit;}
+.stock-wait-spinner {margin:0 auto 16px;width:46px;height:46px;
+ border:5px solid #d8e7ed;border-top-color:#4f7083;border-radius:50%;
+ animation:stock-wait-turn 1s linear infinite;}
+.stock-wait-title {font-size:1.16rem;font-weight:700;margin:0 0 8px;}
+.stock-wait-subtitle {font-size:.92rem;color:#667f8e;line-height:1.5;margin:0 0 17px;}
+.stock-wait-track {height:7px;overflow:hidden;background:#e7f0f4;border-radius:999px;}
+.stock-wait-bar {height:100%;width:32%;border-radius:999px;background:#4f7083;
+ animation:stock-wait-move 1.45s ease-in-out infinite;}
+@media (prefers-reduced-motion:reduce) {
+ .stock-wait-spinner,.stock-wait-bar {animation:none}
+}
+</style>
+<div class="stock-wait-overlay" role="status" aria-live="polite" aria-label="正在查詢股票">
+  <div class="stock-wait-card">
+    <div class="stock-wait-spinner" aria-hidden="true"></div>
+    <div class="stock-wait-title">正在取得股票資料</div>
+    <p class="stock-wait-subtitle">正在向 TWSE 查詢、整理交易資料並同步儀表板…</p>
+    <div class="stock-wait-track"><div class="stock-wait-bar"></div></div>
+  </div>
+</div>
+"""
+
+
+def perform_stock_search(query: str, navigate, *, days: int = 180,
+                         error_key: str = "unified_search_error",
+                         available_stock_labels=None) -> None:
+    """Run one real TWSE lookup, preserve the tracking side effect, then navigate.
+
+    The animation is indeterminate because TWSE does not report progress.
+    Both success and error trigger a rerun, naturally removing the overlay.
+    """
+    try:
+        stock_id = resolve_stock_query(query)
+        st.html(SEARCH_WAIT_STYLE)
+        result = fetch_and_store_stock(stock_id, days=days)
+        if not result.get("source_rows"):
+            raise ValueError(result.get("warning") or "TWSE 未回傳有效交易資料。")
+        rows = [item for item in StockDatabase().list_available_stocks()
+                if item["stock_id"] == stock_id]
+        if not rows:
+            raise RuntimeError("資料查詢成功，但找不到 SQLite 股票紀錄。")
+        label = f'{stock_id} {rows[0]["stock_name"]}'.strip()
+        if available_stock_labels:
+            label = next((value for value in available_stock_labels
+                          if value.split(" ", 1)[0] == stock_id), label)
+        st.session_state["twse_lookup_id"] = stock_id
+        st.session_state["twse_lookup_days"] = days
+        st.session_state["twse_lookup_result"] = result
+        cached_stock_prices.clear()
+        navigate("個股儀表板", label)
+        st.rerun()
+    except (ValueError, RuntimeError, OSError, requests.RequestException) as exc:
+        LOGGER.warning("Unified stock search failed: %s", exc)
+        st.session_state[error_key] = f"股票查詢失敗：{exc}"
+        st.rerun()
+
+
 # Scoped styling for the lookup page; other pages are unaffected.
 LOOKUP_STYLE = """
 <style>
