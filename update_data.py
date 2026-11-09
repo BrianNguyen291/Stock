@@ -10,6 +10,7 @@ import csv
 import json
 import logging
 import random
+import re
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -33,6 +34,20 @@ def load_stock_ids(path):
     if any(not isinstance(stock, str) or not stock.isdigit() for stock in stocks):
         raise ValueError("股票代號必須是字串形式的數字")
     return list(dict.fromkeys(stocks))
+
+
+def merge_stock_ids(configured: list[str], queried: list[str], *, max_stocks: int = 200) -> list[str]:
+    """Stable, deduplicated schedule: configured 10 first, then queried stocks.
+
+    Fail explicitly rather than silently skipping symbols when capacity is hit.
+    """
+    allowed = re.compile(r"(?:[0-9]{4}|00[0-9]{3}|[0-9]{6}|[0-9]{5}[A-Z])\Z")
+    if any(not isinstance(code, str) or not allowed.fullmatch(code) for code in queried):
+        raise ValueError("自動更新清單包含不支援的股票代號")
+    merged = list(dict.fromkeys([*configured, *queried]))
+    if len(merged) > max_stocks:
+        raise ValueError(f"自動更新清單超過 {max_stocks} 檔上限，請先調整容量或清單")
+    return merged
 
 
 def read_existing_dates(path, stock_id):
@@ -206,6 +221,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="台股增量更新（預設暫存 CSV；可明確開啟 SQLite 寫入）")
     parser.add_argument("--stocks-file", type=Path, default=Path("stocks.json"))
     parser.add_argument("--write-db", action="store_true", help="明確啟用 SQLite 寫入")
+    parser.add_argument("--include-queried", action="store_true", help="連同 SQLite 已成功查詢股票一起更新；需要 --write-db")
     parser.add_argument("--db", type=Path, default=None, help="SQLite 位置，測試時請指定獨立路徑")
     parser.add_argument("--start", type=parse_date, default=None)
     parser.add_argument("--end", type=parse_date, default=None)
@@ -234,7 +250,12 @@ def main(argv=None):
         parser.error(str(exc))
     if args.write_db and args.db is None:
         parser.error("--write-db 必須搭配 --db 明確指定資料庫（避免誤寫正式庫）")
+    if args.include_queried and not args.write_db:
+        parser.error("--include-queried 需要 --write-db 與 --db")
     db = StockDatabase(args.db) if args.write_db else None
+    if args.include_queried:
+        stocks = merge_stock_ids(stocks, db.list_auto_update_stocks())
+        LOG.info("本次自動更新共 %d 檔（固定清單 + SQLite 已查詢清單）", len(stocks))
     market_holidays = load_market_holidays(args.market_holidays_file)
     reports = []
     # Plain session: exactly `attempts` outer calls, avoiding nested automatic retries.
