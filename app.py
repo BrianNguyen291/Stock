@@ -17,7 +17,7 @@ from comparison import render_comparison
 from crawler import crawl
 from database import StockDatabase
 from home import DESIGN_TOKENS, render_home, render_login
-from stock_lookup import export_table, excel_bytes, perform_stock_search, search_stock_candidates
+from stock_lookup import export_table, excel_bytes, perform_stock_search, search_stock_candidates, resolve_exact_stock_query
 
 
 DATA_DIR = Path(__file__).parent
@@ -321,45 +321,40 @@ def scroll_to_top(requested: bool) -> None:
 
 
 def render_queried_stock_history() -> None:
-    """Clickable persistent stock-query list, stored in shared SQLite.
-
-    This is intentionally NOT a WebJob status table. Only securities that
-    have been successfully queried and enrolled appear here; historical CSV
-    imports do not silently count as user lookups.
-    """
+    """Open a previously queried stock; never refetch TWSE from history picker."""
     db = StockDatabase()
-    queried_ids = db.list_auto_update_stocks()
-    known = {row["stock_id"]: row for row in db.list_available_stocks()}
-    entries = []
-    for stock_id in reversed(queried_ids):
-        stock = known.get(stock_id)
+    known = {item["stock_id"]: item for item in db.list_available_stocks()}
+    options = []
+    for code in reversed(db.list_auto_update_stocks()):
+        stock = known.get(code)
         if stock is None:
             continue
-        label = next(
-            (name for name in STOCK_FILES if name.split(" ", 1)[0] == stock_id),
-            f'{stock_id} {stock["stock_name"]}'.strip(),
+        display_name = next(
+            (label for label in STOCK_FILES if label.split(" ", 1)[0] == code),
+            f'{code} {stock["stock_name"]}'.strip(),
         )
-        entries.append((stock_id, label, stock["latest_date"]))
+        options.append(display_name)
 
     st.markdown("### 曾查詢的股票")
-    st.caption("成功查詢過的股票會保存在此清單，點擊即可開啟對應個股儀表板；每天會由雲端排程持續更新。")
-    if not entries:
-        st.info("目前尚無查詢紀錄。請使用首頁或上方搜尋框查詢股票。")
+    if not options:
+        st.info("尚無查詢紀錄，請使用上方搜尋框查詢股票。")
         return
 
-    with st.container(border=True):
-        for start in range(0, len(entries), 4):
-            columns = st.columns(4)
-            for column, (stock_id, label, latest_date) in zip(columns, entries[start:start + 4]):
-                with column:
-                    if st.button(
-                        label, key=f"queried_stock_open_{stock_id}",
-                        use_container_width=True,
-                    ):
-                        navigate(DASHBOARD_STOCK_PAGE, label)
-                        st.rerun()
-                    st.caption(f"最新交易日：{latest_date or '尚無資料'}")
-
+    selected_code = str(st.session_state.get("queried_stock_choice", "")).split(" ", 1)[0]
+    selected_index = next(
+        (i for i, label in enumerate(options) if label.split(" ", 1)[0] == selected_code),
+        0,
+    )
+    picker, action = st.columns([5, 1.2], vertical_alignment="bottom")
+    with picker:
+        selection = st.selectbox(
+            "曾查詢的股票", options, index=selected_index,
+            key="queried_stock_choice", label_visibility="collapsed",
+        )
+    with action:
+        if st.button("查詢", key="queried_stock_open", type="primary", use_container_width=True):
+            navigate(DASHBOARD_STOCK_PAGE, selection)
+            st.rerun()
 
 
 def render_kline_tab(filtered: pd.DataFrame, stock_label: str, ma_keys: list[str], bollinger_key: str) -> None:
@@ -533,8 +528,11 @@ def render_stock_picker(stocks: dict[str, pd.DataFrame]) -> None:
 def _queue_dashboard_search(query: str | None = None) -> None:
     """Queue a TWSE search, avoiding network operations inside widget callbacks."""
     entered = query if query is not None else st.session_state.get("dashboard_stock_query", "")
-    if str(entered).strip():
+    # Only an exact existing code or full name auto-submits. Ambiguous text
+    # remains in the input so the suggestions can be chosen explicitly.
+    if resolve_exact_stock_query(str(entered)):
         st.session_state["dashboard_pending_search"] = str(entered).strip()
+        st.session_state["dashboard_suggestions_hidden_for"] = str(entered).strip()
 
 
 def render_dashboard_toolbar(page: str):
@@ -571,7 +569,9 @@ def render_dashboard_toolbar(page: str):
         )
 
     query = str(st.session_state.get("dashboard_stock_query") or "").strip()
-    if query and query != selected_stock and query != st.session_state.get("dashboard_suggestions_hidden_for"):
+    if (query and not resolve_exact_stock_query(query)
+            and query != selected_stock
+            and query != st.session_state.get("dashboard_suggestions_hidden_for")):
         try:
             candidates = search_stock_candidates(query, limit=6)
         except (ValueError, OSError, RuntimeError, requests.RequestException):
