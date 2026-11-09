@@ -123,6 +123,10 @@ class StockDatabase:
                     note TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY (stock_id, date)
                 );
+                CREATE TABLE IF NOT EXISTS auto_update_stocks (
+                    stock_id TEXT PRIMARY KEY REFERENCES stocks(stock_id),
+                    registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                );
                 CREATE TABLE IF NOT EXISTS stock_update_runs (
                     id INTEGER PRIMARY KEY,
                     stock_id TEXT NOT NULL,
@@ -286,6 +290,32 @@ class StockDatabase:
             )
             connection.execute("INSERT INTO update_logs(source, row_count) VALUES (?, ?)", (source, len(records)))
         return len(records)
+
+    def register_auto_update_stock(self, stock_id: str) -> bool:
+        """Track a valid TWSE lookup for subsequent scheduled updates.
+
+        Only stocks with previously stored daily prices may be registered.
+        Repeated lookups are idempotent; legacy CSV imports aren't enrolled.
+        """
+        stock_id = _stock_id(stock_id)
+        with self.connect() as connection:
+            found = connection.execute(
+                "SELECT 1 FROM daily_prices WHERE stock_id=? LIMIT 1", (stock_id,)
+            ).fetchone()
+            if found is None:
+                raise ValueError("股票尚無有效交易資料，不可加入自動更新清單")
+            cursor = connection.execute("""
+                INSERT INTO auto_update_stocks(stock_id) VALUES (?)
+                ON CONFLICT(stock_id) DO NOTHING
+            """, (stock_id,))
+            return cursor.rowcount == 1
+
+    def list_auto_update_stocks(self) -> list[str]:
+        """Get persistent queried-stock IDs for the shared Azure WebJob."""
+        with self.connect() as connection:
+            return [row[0] for row in connection.execute(
+                "SELECT stock_id FROM auto_update_stocks ORDER BY registered_at, stock_id"
+            )]
 
     def record_stock_run(self, record: dict) -> None:
         """Save every WebJob result, including no changes and failures."""

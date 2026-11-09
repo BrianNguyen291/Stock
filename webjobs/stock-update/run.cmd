@@ -1,4 +1,4 @@
-
+﻿
 @echo off
 setlocal
 
@@ -20,6 +20,6 @@ if /I not "%STOCK_WEBJOB_ALLOWED_SLOT%"=="test" (
 cd /d "%APP_ROOT%"
 if errorlevel 1 exit /b 1
 
-"%PYTHON_EXE%" "%APP_ROOT%\update_data.py" --write-db --db "%DB_PATH%" --lookback-days 40 --attempts 3 --retry-seconds 60 --log-dir "%LOG_DIR%"
+"%PYTHON_EXE%" "%APP_ROOT%\update_data.py" --write-db --db "%DB_PATH%" --include-queried --lookback-days 40 --attempts 3 --retry-seconds 60 --log-dir "%LOG_DIR%"
 
 exit /b %ERRORLEVEL%

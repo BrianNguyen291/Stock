@@ -1,6 +1,6 @@
 """On-demand TWSE listed-stock lookup for the Streamlit dashboard.
 
-This module is deliberately independent of the configured 10-stock Azure WebJob.
+Successful TWSE lookups are enrolled in the shared SQLite auto-update registry.
 """
 from __future__ import annotations
 from html import escape
@@ -174,6 +174,11 @@ def fetch_and_store_stock(stock_id: str, days: int = 180, *, pause_seconds: floa
     existing_dates = set(existing["date"].dt.strftime("%Y-%m-%d")) if not existing.empty else set()
     new_rows = [row for day, row in sorted(all_rows.items()) if day not in existing_dates]
     written = db.upsert_prices(pd.DataFrame(normalize_twse_rows(new_rows)), source=f"twse-dashboard:{stock_id}") if new_rows else 0
+    # Register only after the lookup has confirmed real TWSE rows and the
+    # database has persisted/previously contained valid daily prices.
+    # A lookup without source data must not enter the scheduled-update queue.
+    if all_rows:
+        db.register_auto_update_stock(stock_id)
     return {
         "stock_id": stock_id,
         "source_rows": len(all_rows),
@@ -451,7 +456,7 @@ def render_stock_lookup(navigate=None, available_stock_labels: list[str] | None 
         try:
             stock_id = resolve_stock_query(pending)
             days = st.session_state.get("lookup_search_days", 180)
-            with st.spinner(f"正在查詢 {stock_id} 的 TWSE 資料並同步 SQLite…"):
+            with st.spinner(f"正在查詢 {stock_id} 的資料"):
                 result = fetch_and_store_stock(stock_id, days)
             if not result.get("source_rows"):
                 st.session_state["lookup_search_error"] = (
