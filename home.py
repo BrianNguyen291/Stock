@@ -416,7 +416,7 @@ def _render_cards(quotes, navigate):
 def render_home(stock_labels, quotes, navigate):
     """Stable homepage stock search with Chinese-name suggestions."""
     from database import StockDatabase
-    from stock_lookup import perform_stock_search, search_stock_candidates
+    from stock_lookup import perform_stock_search, search_stock_candidates, resolve_exact_stock_query
 
     def queue_search(query=None):
         query = str(query if query is not None else st.session_state.get("home_twse_search", "")).strip()
@@ -427,6 +427,12 @@ def render_home(stock_labels, quotes, navigate):
         st.session_state["home_suggestions_hidden_for"] = str(
             st.session_state.get("home_twse_search", "")
         ).strip()
+
+    def queue_exact_search():
+        """Enter/blur: auto-submit only a known exact code or full name."""
+        query = str(st.session_state.get("home_twse_search", "")).strip()
+        if resolve_exact_stock_query(query):
+            queue_search(query)
 
     # Use the SAME real TWSE query + SQLite auto-enrollment as dashboard searches.
     pending = st.session_state.pop("home_pending_search", None)
@@ -458,12 +464,14 @@ def render_home(stock_labels, quotes, navigate):
                     placeholder="輸入中文名稱或代號，例如國巨、國泰、009816",
                     label_visibility="collapsed",
                     max_chars=32,
+                    on_change=queue_exact_search,
                 )
                 typed = entered.strip()
                 hidden_for = st.session_state.get("home_suggestions_hidden_for")
                 if hidden_for and typed != hidden_for:
                     st.session_state.pop("home_suggestions_hidden_for", None)
-                if typed and st.session_state.get("home_suggestions_hidden_for") != typed:
+                if (typed and not resolve_exact_stock_query(typed)
+                    and st.session_state.get("home_suggestions_hidden_for") != typed):
                     try:
                         candidates = search_stock_candidates(typed, limit=8)
                     except (ValueError, OSError, RuntimeError, requests.RequestException):

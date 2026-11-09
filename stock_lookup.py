@@ -94,6 +94,26 @@ def search_stock_candidates(query: str, limit: int = 12) -> list[dict[str, str]]
     return [r for _, _, r in sorted(found)[:limit]]
 
 
+
+def resolve_exact_stock_query(query: str) -> str | None:
+    """Return code only for an EXISTING exact symbol or full security name.
+
+    Prefix/substring matches (e.g. 台, 國) stay in the suggestion workflow.
+    A valid but unknown ticker is not assumed to be an existing security.
+    """
+    from unicodedata import normalize
+
+    term = normalize("NFKC", str(query)).strip().upper().replace("臺", "台")
+    if not term:
+        return None
+    for item in search_stock_candidates(term, limit=50):
+        code = item["stock_id"].strip().upper()
+        name = normalize("NFKC", item["stock_name"]).strip().upper().replace("臺", "台")
+        if term == code or term == name or term == normalize("NFKC", f'{code} {name}'):
+            return code
+    return None
+
+
 def resolve_stock_query(query: str) -> str:
     """Return a supported stock code; ambiguous names require user selection."""
     text = str(query).strip().upper()
