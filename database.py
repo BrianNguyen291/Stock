@@ -22,6 +22,7 @@ PRICE_COLUMNS = (
     "change", "transaction_count", "note",
 )
 REQUIRED = ("date", "stock_id", "open", "high", "low", "close", "trade_volume")
+ALERT_KINDS = ("price_above", "price_below", "volume_above")
 
 
 def get_database_path() -> Path:
@@ -258,6 +259,35 @@ class StockDatabase:
             rows = connection.execute("""
                 SELECT id, stock_id, purchase_price, shares, purchase_date
                 FROM holdings WHERE user_id = ? ORDER BY purchase_date, id
+            """, (user_id,))
+            return [dict(row) for row in rows]
+
+    def add_alert(self, user_id: int, stock_id: str, *, kind: str, threshold: float) -> int:
+        """price_above / price_below 的門檻是收盤價；volume_above 是 20 日均量的倍數。"""
+        if kind not in ALERT_KINDS:
+            raise ValueError("不支援的提醒類型")
+        if (isinstance(threshold, bool) or not isinstance(threshold, (int, float))
+                or not math.isfinite(threshold) or threshold <= 0):
+            raise ValueError("提醒門檻必須是有限的正數")
+        with self.connect() as connection:
+            result = connection.execute("""
+                INSERT INTO alerts(user_id, stock_id, kind, threshold) VALUES (?, ?, ?, ?)
+            """, (user_id, _stock_id(stock_id), kind, float(threshold)))
+            return result.lastrowid
+
+    def remove_alert(self, user_id: int, alert_id: int) -> bool:
+        with self.connect() as connection:
+            result = connection.execute(
+                "DELETE FROM alerts WHERE user_id = ? AND id = ?", (user_id, alert_id)
+            )
+            return result.rowcount == 1
+
+    def list_alerts(self, user_id: int) -> list[dict]:
+        with self.connect() as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute("""
+                SELECT id, stock_id, kind, threshold
+                FROM alerts WHERE user_id = ? ORDER BY stock_id, id
             """, (user_id,))
             return [dict(row) for row in rows]
 

@@ -12,18 +12,21 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+from alerts import render_alert_banner, render_alerts
 from charts import MA_WINDOWS, TRADINGVIEW_HEIGHT, tradingview_chart, volume_chart
 from comparison import render_comparison
 from crawler import crawl
 from database import StockDatabase
 from home import DESIGN_TOKENS, render_home, render_login
+from portfolio import render_portfolio
 from stock_lookup import export_table, excel_bytes, perform_stock_search, search_stock_candidates, resolve_exact_stock_query
 
 
 DATA_DIR = Path(__file__).parent
 STOCK_FILE_PATTERN = re.compile(r"\d{4,6}")
-DASHBOARD_PAGES = ["個股儀表板", "條件選股", "股票比較"]
+DASHBOARD_PAGES = ["個股儀表板", "條件選股", "股票比較", "持股損益", "價格提醒"]
 DASHBOARD_STOCK_PAGE = DASHBOARD_PAGES[0]
+PAGES_WITHOUT_DATES = {"條件選股", "持股損益", "價格提醒"}
 ANALYSIS_PANEL_HEIGHT = 416
 
 
@@ -540,7 +543,7 @@ def render_dashboard_toolbar(page: str):
     selected_stock = st.session_state.get("selected_stock", "")
     date_slot = None
     with st.container(key="dashboard_toolbar"):
-        if page == "條件選股":
+        if page in PAGES_WITHOUT_DATES:
             menu, search, navigation = st.columns([1, 3, 6], vertical_alignment="center")
         else:
             menu, search, dates, navigation = st.columns([1, 3, .55, 5.45], vertical_alignment="center")
@@ -627,10 +630,16 @@ def main() -> None:
     if error:
         st.error(error)
     stocks, errors = load_all_stocks()
+    if page != "價格提醒":
+        render_alert_banner(stocks, navigate)
     if page == "股票比較":
         render_comparison(STOCK_FILES, read_stock_data, date_slot=date_slot)
     elif page == "條件選股":
         render_stock_picker(stocks)
+    elif page == "持股損益":
+        render_portfolio(stocks, navigate)
+    elif page == "價格提醒":
+        render_alerts(stocks, navigate)
     else:
         render_single_stock(stocks, stock_label, date_slot)
     if page == DASHBOARD_STOCK_PAGE:

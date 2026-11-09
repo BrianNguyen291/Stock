@@ -15,6 +15,8 @@ on:
       - data_processor.py
       - database.py
       - stock_lookup.py
+      - portfolio.py
+      - alerts.py
       - serve.py
       - web.config
       - requirements.txt
@@ -58,7 +60,7 @@ jobs:
           New-Item -ItemType Directory -Force dist\runtime | Out-Null
           New-Item -ItemType Directory -Force dist\data\raw | Out-Null
           Copy-Item -Recurse .streamlit dist\
-          Copy-Item app.py, auth.py, home.py, market_map.py, charts.py, comparison.py, crawler.py, data_processor.py, database.py, stock_lookup.py, serve.py, web.config dist\
+          Copy-Item app.py, auth.py, home.py, market_map.py, charts.py, comparison.py, crawler.py, data_processor.py, database.py, stock_lookup.py, portfolio.py, alerts.py, serve.py, web.config dist\
           Copy-Item *.csv dist\
           Copy-Item data\raw\*.csv dist\data\raw\
           python -m pip install --target dist\site-packages -r requirements.txt

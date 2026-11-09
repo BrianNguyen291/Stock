@@ -265,7 +265,7 @@ jobs:
           # Package application, stock data and scheduled update scripts
           New-Item -ItemType Directory -Force dist\data\raw | Out-Null
           Copy-Item -Recurse .streamlit dist\
-          Copy-Item app.py, auth.py, home.py, market_map.py, charts.py, comparison.py, crawler.py, data_processor.py, database.py, stock_lookup.py, serve.py, web.config, update_data.py, stocks.json dist\
+          Copy-Item app.py, auth.py, home.py, market_map.py, charts.py, comparison.py, crawler.py, data_processor.py, database.py, stock_lookup.py, portfolio.py, alerts.py, serve.py, web.config, update_data.py, stocks.json dist\
 
           if (!(Test-Path "dist\stock_lookup.py")) {
               throw "Missing stock_lookup.py in deployment package"
