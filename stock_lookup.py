@@ -156,6 +156,95 @@ def normalize_twse_rows(rows: list[dict]) -> list[dict]:
     return normalized
 
 
+# DAILY_TWSE_LOOKUP_CACHE_V1
+# Record a confirmed lookup in the shared SQLite. Do not infer lookup freshness
+# from the latest trading date: holidays and pre-publication hours differ.
+def _ensure_daily_lookup_table(db: StockDatabase) -> None:
+    with db.connect() as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS twse_daily_lookup_checks (
+                stock_id TEXT PRIMARY KEY,
+                checked_day TEXT NOT NULL,
+                checked_after_close INTEGER NOT NULL,
+                coverage_start TEXT NOT NULL,
+                source_latest TEXT NOT NULL,
+                source_rows INTEGER NOT NULL CHECK(source_rows > 0)
+            )
+        """)
+
+
+def _same_day_lookup_result(
+    db: StockDatabase, stock_id: str, start: date, now: datetime
+) -> dict | None:
+    """Return cached lookup metadata only for today's successful, sufficient fetch.
+
+    The 17:30 Taipei cutover allows a second fetch after daily publication if
+    the user previously looked up the same ticker before the market closed.
+    """
+    _ensure_daily_lookup_table(db)
+    with db.connect() as con:
+        row = con.execute(
+            """SELECT checked_day, checked_after_close, coverage_start,
+                      source_latest, source_rows
+               FROM twse_daily_lookup_checks WHERE stock_id = ?""",
+            (stock_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    checked_day, after_close, coverage_start, latest, source_rows = row
+    now_after_close = now.time() >= time(17, 30)
+    if checked_day != now.date().isoformat():
+        return None
+    if now_after_close and not after_close:
+        return None
+    if coverage_start > start.isoformat():
+        return None  # A wider history request needs a TWSE backfill.
+    # Do not treat a check record as proof if data has since been deleted.
+    data = db.query_prices(stock_id, start=start, end=now.date(), indicators=False)
+    if data.empty:
+        return None
+    return {
+        "stock_id": stock_id,
+        "source_rows": source_rows,
+        "inserted_rows": 0,
+        "source_latest": latest,
+        "db_path": str(db.path),
+        "warning": None,
+        "cache_hit": True,
+    }
+
+
+def _record_daily_lookup(
+    db: StockDatabase, stock_id: str, start: date, now: datetime,
+    source_latest: str, source_rows: int,
+) -> None:
+    """Save only a completed TWSE fetch with confirmed daily trading rows."""
+    if source_rows <= 0 or not source_latest:
+        return
+    # If the market day's close has not been published yet, do not claim
+    # the lookup is complete for the day. On a weekday after 17:30, a stale
+    # source date forces a fresh TWSE check on the next user search.
+    if (now.weekday() < 5 and now.time() >= time(17, 30)
+            and source_latest < now.date().isoformat()):
+        return
+    _ensure_daily_lookup_table(db)
+    with db.connect() as con:
+        con.execute(
+            """INSERT INTO twse_daily_lookup_checks
+                 (stock_id, checked_day, checked_after_close,
+                  coverage_start, source_latest, source_rows)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(stock_id) DO UPDATE SET
+                 checked_day=excluded.checked_day,
+                 checked_after_close=excluded.checked_after_close,
+                 coverage_start=excluded.coverage_start,
+                 source_latest=excluded.source_latest,
+                 source_rows=excluded.source_rows""",
+            (stock_id, now.date().isoformat(), int(now.time() >= time(17, 30)),
+             start.isoformat(), source_latest, source_rows),
+        )
+
+
 def fetch_and_store_stock(stock_id: str, days: int = 180, *, pause_seconds: float = 1.1) -> dict:
     """Fetch released TWSE daily rows then insert only missing (stock,date) keys.
 
@@ -165,6 +254,11 @@ def fetch_and_store_stock(stock_id: str, days: int = 180, *, pause_seconds: floa
     stock_id = validate_stock_id(stock_id)
     start, end = date_window(days)
     current_time = datetime.now(TAIPEI)
+    db = StockDatabase()  # Shared with Dashboard and Azure stock-update WebJob.
+    cached_result = _same_day_lookup_result(db, stock_id, start, current_time)
+    if cached_result is not None:
+        LOGGER.info("%s：當日已完成 TWSE 查詢，直接使用 SQLite，不重複爬取", stock_id)
+        return cached_result
     months = list(month_starts(start, end))
     all_rows: dict[str, dict] = {}
     if pause_seconds < 1.0:
@@ -189,7 +283,6 @@ def fetch_and_store_stock(stock_id: str, days: int = 180, *, pause_seconds: floa
             if index != len(months) - 1:
                 sleep_time.sleep(pause_seconds)
 
-    db = StockDatabase()  # Identical database resolution as Dashboard.
     existing = db.query_prices(stock_id, start=start, end=end, indicators=False)
     existing_dates = set(existing["date"].dt.strftime("%Y-%m-%d")) if not existing.empty else set()
     new_rows = [row for day, row in sorted(all_rows.items()) if day not in existing_dates]
@@ -199,11 +292,14 @@ def fetch_and_store_stock(stock_id: str, days: int = 180, *, pause_seconds: floa
     # A lookup without source data must not enter the scheduled-update queue.
     if all_rows:
         db.register_auto_update_stock(stock_id)
+        _record_daily_lookup(db, stock_id, start, current_time,
+                             max(all_rows), len(all_rows))
     return {
         "stock_id": stock_id,
         "source_rows": len(all_rows),
         "inserted_rows": written,
         "source_latest": max(all_rows, default=None),
+        "cache_hit": False,
         "db_path": str(db.path),
         "warning": ("TWSE 在指定區間沒有回傳已公布的日成交資料；請確認代號是否為上市股票。"
                     if not all_rows else None),
@@ -248,34 +344,71 @@ def excel_bytes(frame: pd.DataFrame) -> bytes:
 SEARCH_WAIT_STYLE = """
 <style>
 @keyframes stock-wait-turn {to {transform: rotate(360deg)}}
-@keyframes stock-wait-move {0% {transform:translateX(-110%)} 100% {transform:translateX(310%)}}
 .stock-wait-overlay {position:fixed;inset:0;z-index:999999;
  background:rgba(21,36,49,.23);backdrop-filter:blur(2px);
  display:flex;justify-content:center;align-items:center;pointer-events:auto;}
 .stock-wait-card {background:#fff;border:1px solid #dce5eb;border-radius:22px;
- box-shadow:0 18px 60px rgba(20,34,46,.18);width:min(390px,86vw);
+ box-shadow:0 18px 60px rgba(20,34,46,.18);width:min(580px,94vw);
  padding:28px 30px;text-align:center;color:#223a49;font-family:inherit;}
 .stock-wait-spinner {margin:0 auto 16px;width:46px;height:46px;
  border:5px solid #d8e7ed;border-top-color:#4f7083;border-radius:50%;
  animation:stock-wait-turn 1s linear infinite;}
 .stock-wait-title {font-size:1.16rem;font-weight:700;margin:0 0 8px;}
-.stock-wait-subtitle {font-size:.92rem;color:#667f8e;line-height:1.5;margin:0 0 17px;}
-.stock-wait-track {height:7px;overflow:hidden;background:#e7f0f4;border-radius:999px;}
-.stock-wait-bar {height:100%;width:32%;border-radius:999px;background:#4f7083;
- animation:stock-wait-move 1.45s ease-in-out infinite;}
-@media (prefers-reduced-motion:reduce) {
- .stock-wait-spinner,.stock-wait-bar {animation:none}
+.stock-wait-subtitle {
+    font-size: .92rem;
+    color: #667f8e;
+    line-height: 1.5;
+    margin: 0 0 17px;
+    white-space: nowrap;
 }
+
+@media (max-width: 620px) {
+    .stock-wait-subtitle {
+        white-space: normal;
+    }
+}
+
 </style>
 <div class="stock-wait-overlay" role="status" aria-live="polite" aria-label="正在查詢股票">
   <div class="stock-wait-card">
     <div class="stock-wait-spinner" aria-hidden="true"></div>
     <div class="stock-wait-title">正在取得股票資料</div>
     <p class="stock-wait-subtitle">正在向 TWSE 查詢、整理交易資料並同步儀表板…</p>
-    <div class="stock-wait-track"><div class="stock-wait-bar"></div></div>
   </div>
 </div>
 """
+
+
+# CACHE_AWARE_LOADING_UI_V1
+# A cached lookup only dims the page: no spinner/card/false progress indicator.
+# Recheck inside fetch_and_store_stock() as before, so this UI hint never
+# bypasses the actual cache policy or TWSE freshness validation.
+CACHE_HIT_DIM_STYLE = """
+<style>
+.stock-cache-dim-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 999999;
+
+    /* 半透明灰色背景 */
+    background: rgba(28, 39, 49, 0.18);
+
+    /* 保留原頁面內容，但稍微模糊 */
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+
+    pointer-events: none;
+}
+</style>
+<div class="stock-cache-dim-overlay" aria-hidden="true"></div>
+"""
+
+def _use_cache_loading_ui(stock_id: str, days: int) -> bool:
+    """Return True only if the persistent daily lookup can be reused."""
+    start, _ = date_window(days)
+    db = StockDatabase()
+    now = datetime.now(TAIPEI)
+    return _same_day_lookup_result(db, stock_id, start, now) is not None
 
 
 def perform_stock_search(query: str, navigate, *, days: int = 180,
@@ -288,8 +421,16 @@ def perform_stock_search(query: str, navigate, *, days: int = 180,
     """
     try:
         stock_id = resolve_stock_query(query)
-        st.html(SEARCH_WAIT_STYLE)
+
+        # 當天快取命中：只顯示灰色遮罩
+        # 需要 TWSE 查詢：保留原本旋轉動畫
+        if _use_cache_loading_ui(stock_id, days):
+            st.html(CACHE_HIT_DIM_STYLE)
+        else:
+            st.html(SEARCH_WAIT_STYLE)
+
         result = fetch_and_store_stock(stock_id, days=days)
+
         if not result.get("source_rows"):
             raise ValueError(result.get("warning") or "TWSE 未回傳有效交易資料。")
         rows = [item for item in StockDatabase().list_available_stocks()
