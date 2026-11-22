@@ -2,11 +2,13 @@
 
 from base64 import b64encode
 from html import escape
+import sqlite3
 
 import streamlit as st
 import requests
 
 from auth import current_identity, render_auth, render_logout
+from database import StockDatabase
 from market_map import render_market_map
 
 
@@ -117,20 +119,64 @@ PAGE_STYLE = f"""
   position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%);
 }}
 .st-key-market_profile [data-testid="stPopoverButton"] > div > [aria-hidden="true"] {{ display: none; }}
-body:has(.st-key-market_profile) [data-testid="stPopoverBody"]:has(.profile-details) {{
-  --ink: #f5f5f5; --dim: #a3a4aa; --surface: #202023;
-  color: var(--ink); background: #141416; border: 1px solid #2a2a2e; border-radius: 16px;
+body:has(.st-key-market_profile) [data-testid="stPopoverBody"]:has(.st-key-profile_card) {{
+  --ink: #17181b; --dim: #72747c; --surface: #f3f3f5;
+  width: 260px;
+  color: var(--ink); background: #fff;
+  border: 1px solid #e3e3e7; border-radius: 16px;
+  padding: .55rem;
+  box-shadow: 0 12px 32px rgb(23 24 27 / .14);
 }}
-[data-testid="stPopoverBody"]:has(.profile-details) button {{
-  color: var(--ink); background: #202023; border: 1px solid #2a2a2e; border-radius: 999px;
+[data-testid="stPopoverBody"]:has(.st-key-profile_card) button {{
+  width: 100%;
+  min-height: 2.55rem;
+  color: var(--ink); background: #f3f3f5;
+  border: 1px solid #ececef; border-radius: 10px;
+  box-shadow: none;
+  justify-content: flex-start;
+  padding-inline: .8rem;
+  margin-top: .15rem;
 }}
-.profile-details {{ min-width: min(210px, 65vw); overflow-wrap: anywhere; }}
-.profile-details strong {{ display: block; color: var(--ink); font-size: 1.05rem; font-weight: 500; }}
+[data-testid="stPopoverBody"]:has(.st-key-profile_card) [data-testid="stButton"] p {{
+  color: var(--ink);
+  font-weight: 600;
+}}
+[data-testid="stPopoverBody"]:has(.st-key-profile_card) button:hover,
+[data-testid="stPopoverBody"]:has(.st-key-profile_card) button:focus-visible {{
+  background: #e9e9ed; border-color: #dedee3;
+}}
+.st-key-profile_card {{
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: .12rem .12rem .55rem;
+}}
+.profile-name {{
+  color: var(--ink);
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.35;
+  margin-top: .18rem;
+}}
+.profile-identifier {{
+  color: var(--dim);
+  font-size: .82rem;
+  margin-top: .12rem;
+}}
 .profile-provider {{
-  display: inline-block; color: var(--ink); background: var(--surface);
-  padding: .22rem .6rem; border-radius: 999px; font-size: .75rem; margin-bottom: .55rem;
+  display: inline-block; color: #656770; background: #f3f3f5;
+  padding: .22rem .58rem; border-radius: 999px; font-size: .72rem; margin-bottom: .48rem;
+  border: 1px solid #ececef;
 }}
-.profile-details p {{ color: var(--dim); margin: .2rem 0 0; font-size: .87rem; }}
+.profile-details p {{ color: var(--dim); margin: .18rem 0 0; font-size: .82rem; }}
+body:has(.st-key-market_profile) [data-testid="stPopoverBody"]:has(.st-key-profile_card) hr {{
+  margin: .38rem 0;
+  border-color: #ececef;
+}}
+[data-testid="stPopoverBody"]:has(.st-key-profile_card) [data-testid="stButton"]:last-child button {{
+  color: #62646b;
+  background: #fff;
+  border: 1px solid #ececef;
+}}
 
 /* 首頁任意股票查詢（文字輸入，不是只能篩選既有選項的 selectbox） */
 .st-key-market_search [data-testid="stTextInput"] input {{
@@ -278,13 +324,13 @@ body:has(.st-key-market_shell) [role="option"]:is(:hover, [data-focused]) {{ bac
   background: #141416; border-color: var(--line); color: var(--ink);
 }}
 .st-key-account_panel input {{ color: var(--ink); caret-color: var(--ink); }}
-.st-key-account_panel:not(:has(.profile-details)) :is(
+.st-key-account_panel:not(:has(.st-key-profile_card)) :is(
   [data-testid="stButton"], [data-testid="stFormSubmitButton"]
 ) button {{ color: #000; background: var(--ink); }}
-.st-key-account_panel:not(:has(.profile-details)) :is(
+.st-key-account_panel:not(:has(.st-key-profile_card)) :is(
   [data-testid="stButton"], [data-testid="stFormSubmitButton"]
 ) button p {{ color: #000; }}
-.st-key-account_panel:not(:has(.profile-details)) :is(
+.st-key-account_panel:not(:has(.st-key-profile_card)) :is(
   [data-testid="stButton"], [data-testid="stFormSubmitButton"]
 ) button:is(:hover, :focus-visible) {{ background: #d9d9dc; }}
 .st-key-account_panel [data-testid="stTextInput"] button {{ background: transparent; }}
@@ -313,15 +359,48 @@ def _direction(change):
     return "up" if change > 0 else "down" if change < 0 else "flat"
 
 
-def _profile_details(identity):
+def open_watchlist_page(navigate=None):
+    current = st.session_state.get("active_page", "首頁")
+    if current != "我的最愛":
+        history = st.session_state.setdefault("page_history", [])
+        if not history or history[-1] != current:
+            history.append(current)
+    st.session_state["active_page"] = "我的最愛"
+    st.session_state["scroll_to_top"] = True
+
+
+def _profile_details(identity, navigate=None):
+    import auth
     local_test = identity.provider == "local_test"
     provider = "測試帳號" if local_test else "Google 帳號"
     name = escape(identity.display_name or provider)
     identifier = escape(identity.subject if local_test else identity.email or "")
-    st.html(
-        f'<div class="profile-details"><span class="profile-provider">{provider}</span>'
-        f'<strong>{name}</strong><p>{identifier}</p></div>'
-    )
+    watchlist_count = 0
+    try:
+        user_id = auth.current_user_id()
+        if user_id is not None:
+            watchlist_count = len(StockDatabase().list_watchlist(user_id))
+    except (OSError, sqlite3.Error, ValueError):
+        watchlist_count = 0
+
+    with st.container(key="profile_card"):
+        st.markdown(
+            f'<span class="profile-provider">{escape(provider)}</span>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="profile-name">{name}</div>'
+            f'<div class="profile-identifier">{escape(identifier)}</div>',
+            unsafe_allow_html=True,
+        )
+    if navigate is not None:
+        st.button(
+            f"我的最愛（{watchlist_count}）",
+            icon=":material/star:",
+            on_click=open_watchlist_page,
+            use_container_width=True,
+        )
+    st.divider()
     render_logout()
 
 
@@ -340,11 +419,11 @@ def _header(navigate, *, back=False):
                     st.button(label, on_click=navigate, args=(page,), key=f"market_nav_{page}")
         with action.container(key="market_action"):
             if back:
-                st.button("← 返回首頁", on_click=navigate, args=("首頁",))
+                st.button("← 上一頁", on_click=navigate, args=("__back__",))
             elif identity := current_identity():
                 with st.container(key="market_profile"):
                     with st.popover("個人資訊", icon=":material/person:"):
-                        _profile_details(identity)
+                        _profile_details(identity, navigate)
             else:
                 st.button("登入", on_click=navigate, args=("登入",))
 
@@ -519,7 +598,8 @@ def render_login(navigate):
         with st.container(key="account_panel"):
             if identity := current_identity():
                 st.html('<div class="account-copy"><h1>個人資訊</h1></div>')
-                _profile_details(identity)
+                _profile_details(identity, navigate)
+                st.button("← 上一頁", on_click=navigate, args=("__back__",), use_container_width=True)
                 return
             st.html("""
             <div class="account-copy">

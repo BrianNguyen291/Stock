@@ -190,14 +190,48 @@ def render_comparison(
 ) -> None:
     """在 Streamlit 頁面中繪製股票比較與進階分析區塊。"""
     import streamlit as st
+    from database import StockDatabase
+    from watchlist import current_watchlist
 
     labels = list(stock_files)
+    if "comparison_selected" not in st.session_state:
+        st.session_state["comparison_selected"] = labels[:MIN_STOCKS]
+
     with st.container(key="dashboard_filters"):
+        if st.button("⭐ 載入並合併到我的最愛", key="comparison_watchlist_add"):
+            try:
+                database = StockDatabase()
+                user_id, favorite_ids = current_watchlist(database)
+                if user_id is None:
+                    st.info("請先登入後再使用最愛股票比較")
+                else:
+                    selected_before_add = list(st.session_state.get("comparison_selected", []))
+                    if not selected_before_add:
+                        st.warning("請先選擇要加入最愛的比較股票")
+                    else:
+                        added = []
+                        already_saved = []
+                        for label in selected_before_add:
+                            stock_id = label.split(" ", 1)[0]
+                            if stock_id in favorite_ids:
+                                already_saved.append(stock_id)
+                            elif database.add_to_watchlist(user_id, stock_id):
+                                added.append(stock_id)
+                                favorite_ids.append(stock_id)
+
+                        if added:
+                            st.success(f"已合併加入：{'、'.join(added)}；原有最愛保持不變")
+                        elif already_saved:
+                            st.info(f"選取股票已全部在最愛清單中：{'、'.join(already_saved)}")
+                        st.rerun()
+            except (OSError, sqlite3.Error, ValueError):
+                st.error("目前無法載入最愛股票，請稍後再試。")
+
         selected = st.multiselect(
             "選擇比較股票",
             labels,
-            default=labels[:MIN_STOCKS],
             max_selections=MAX_STOCKS,
+            key="comparison_selected",
             help=f"可同時比較 {MIN_STOCKS}～{MAX_STOCKS} 檔股票。",
         )
         if len(selected) >= MAX_STOCKS:

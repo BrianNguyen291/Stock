@@ -20,13 +20,14 @@ from database import StockDatabase
 from home import DESIGN_TOKENS, render_home, render_login
 from portfolio import render_portfolio
 from stock_lookup import export_table, excel_bytes, perform_stock_search, search_stock_candidates, resolve_exact_stock_query
+from watchlist import render_watchlist_sidebar, render_watchlist_toggle, render_watchlist_page
 
 
 DATA_DIR = Path(__file__).parent
 STOCK_FILE_PATTERN = re.compile(r"\d{4,6}")
 DASHBOARD_PAGES = ["個股儀表板", "條件選股", "股票比較", "持股損益", "價格提醒"]
 DASHBOARD_STOCK_PAGE = DASHBOARD_PAGES[0]
-PAGES_WITHOUT_DATES = {"條件選股", "持股損益", "價格提醒"}
+PAGES_WITHOUT_DATES = {"條件選股", "持股損益", "價格提醒", "我的最愛"}
 ANALYSIS_PANEL_HEIGHT = 416
 
 
@@ -141,11 +142,44 @@ def load_home_quotes() -> list[tuple]:
 
 
 def navigate(page: str, stock: str | None = None) -> None:
+    if page == "__back__":
+        go_back()
+        return
+    current = st.session_state.get("active_page", "首頁")
+    if page != current:
+        history = st.session_state.setdefault("page_history", [])
+        if not history or history[-1] != current:
+            history.append(current)
+        if len(history) > 20:
+            history.pop(0)
     st.session_state["active_page"] = page
     if stock is not None:
         st.session_state["selected_stock"] = stock
     if page in DASHBOARD_PAGES:
         st.session_state["scroll_to_top"] = True
+
+
+def go_back() -> None:
+    history = st.session_state.setdefault("page_history", [])
+    while history:
+        previous = history.pop()
+        if previous != st.session_state.get("active_page"):
+            st.session_state["active_page"] = previous
+            st.session_state["scroll_to_top"] = True
+            return
+    st.session_state["active_page"] = "首頁"
+    st.session_state["scroll_to_top"] = True
+
+
+def open_watchlist() -> None:
+    """專用最愛頁入口；不經過通用頁面比對，確保彈層按鈕一定可導向。"""
+    current = st.session_state.get("active_page", "首頁")
+    if current != "我的最愛":
+        history = st.session_state.setdefault("page_history", [])
+        if not history or history[-1] != current:
+            history.append(current)
+    st.session_state["active_page"] = "我的最愛"
+    st.session_state["scroll_to_top"] = True
 
 
 def update_all_stocks() -> tuple[list[str], dict[str, str]]:
@@ -204,7 +238,7 @@ def inject_styles() -> None:
         f"""
         <style>
         {DESIGN_TOKENS}
-        [data-testid="stHeader"], [data-testid="stSidebarCollapsedControl"] {{display: none;}}
+        [data-testid="stHeader"] {{display: none;}}
         .block-container {{padding: 1rem clamp(1rem, 3vw, 2.5rem) 3.5rem;}}
         /* 不佔版面的元素移出排版，工具列一開始就在最終位置，不會因間距而跳動。 */
         [data-testid="stElementContainer"]:has(> [data-testid="stMarkdown"] style),
@@ -234,6 +268,54 @@ def inject_styles() -> None:
             border: 0; border-radius: 999px; background: var(--surface); box-shadow: none;
         }}
         .st-key-dashboard_toolbar [data-testid="stPopoverButton"]:hover {{background: var(--surface-hover);}}
+        /* 選單彈層：保留按鈕原有圖示，並讓每個入口有一致的卡片感。 */
+        [data-testid="stPopoverBody"] {{
+            border-radius: 18px !important;
+            border: 1px solid var(--line) !important;
+            box-shadow: 0 16px 44px rgb(23 24 26 / .16) !important;
+            padding: .55rem !important;
+            min-width: 220px;
+        }}
+        [data-testid="stPopoverBody"] [data-testid="stButton"] {{
+            width: 100%;
+        }}
+        [data-testid="stPopoverBody"] [data-testid="stButton"] button {{
+            width: 100%;
+            min-height: 2.65rem;
+            justify-content: flex-start;
+            border: 0;
+            border-radius: 12px;
+            background: transparent;
+            color: var(--ink);
+            box-shadow: none;
+            font-weight: 600;
+            padding: .58rem .75rem;
+        }}
+        [data-testid="stPopoverBody"] [data-testid="stButton"] button:hover,
+        [data-testid="stPopoverBody"] [data-testid="stButton"] button:focus-visible {{
+            background: var(--surface);
+            box-shadow: inset 0 0 0 1px var(--line);
+        }}
+        [data-testid="stPopoverBody"] [data-testid="stButton"] button:active {{
+            transform: scale(.985);
+        }}
+        [data-testid="stPopoverBody"] [data-testid="stDivider"] {{
+            margin: .35rem 0;
+        }}
+        .st-key-watchlist_page_back button {{
+            width: auto;
+            min-height: 2.45rem;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: var(--surface);
+            color: var(--ink);
+            box-shadow: 0 6px 18px rgb(23 24 26 / .06);
+            padding-inline: 1rem;
+        }}
+        .st-key-watchlist_page_back button:hover {{
+            background: var(--surface-hover);
+            transform: translateY(-1px);
+        }}
         .st-key-dashboard_date [data-testid="stPopoverButton"] {{width: 2.5rem; padding: 0;}}
         .st-key-dashboard_date [data-testid="stPopoverButton"] [data-testid="stMarkdownContainer"] {{
             position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%);
@@ -428,6 +510,9 @@ def render_single_stock(stocks: dict[str, pd.DataFrame], stock_label: str | None
     metric_columns[2].metric("區間最低價", format_number(filtered["low"].min()))
     metric_columns[3].metric("最新成交量（股）", format_number(latest.get("trade_volume")))
 
+    stock_id = str(latest["stock_id"])
+    render_watchlist_toggle(stock_id, str(name))
+
     kline_tab, close_tab, volume_tab, table_tab = st.tabs(["K 線圖", "收盤價走勢", "成交量走勢", "交易資料"])
     with kline_tab:
         render_kline_tab(filtered, stock_label, ma_keys, bollinger_key)
@@ -542,6 +627,13 @@ def render_dashboard_toolbar(page: str):
     stock_labels = list(STOCK_FILES)
     selected_stock = st.session_state.get("selected_stock", "")
     date_slot = None
+    sidebar_choice, favorite_ids, _ = render_watchlist_sidebar(
+        stock_labels,
+        selected_stock,
+        navigate,
+        page,
+    )
+
     with st.container(key="dashboard_toolbar"):
         if page in PAGES_WITHOUT_DATES:
             menu, search, navigation = st.columns([1, 3, 6], vertical_alignment="center")
@@ -550,9 +642,37 @@ def render_dashboard_toolbar(page: str):
             date_slot = dates.container(key="dashboard_date")
         with menu:
             with st.popover("選單", icon=":material/menu:"):
-                st.button("首頁", on_click=navigate, args=("首頁",))
-                st.button("帳戶", on_click=navigate, args=("登入",))
-                update_requested = st.button("更新全部資料", icon=":material/refresh:")
+                st.button(
+                    "上一頁",
+                    icon=":material/arrow_back:",
+                    on_click=go_back,
+                    use_container_width=True,
+                )
+                st.button(
+                    "首頁",
+                    icon=":material/home:",
+                    on_click=navigate,
+                    args=("首頁",),
+                    use_container_width=True,
+                )
+                st.button(
+                    f"⭐ 我的最愛（{len(favorite_ids)}）",
+                    on_click=open_watchlist,
+                    use_container_width=True,
+                )
+                st.divider()
+                st.button(
+                    "帳戶",
+                    icon=":material/account_circle:",
+                    on_click=navigate,
+                    args=("登入",),
+                    use_container_width=True,
+                )
+                update_requested = st.button(
+                    "更新全部資料",
+                    icon=":material/refresh:",
+                    use_container_width=True,
+                )
         with search:
             # Unlike the old selectbox, this accepts NEW codes and Chinese names.
             # Press Enter or click a live suggestion to perform the same TWSE
@@ -611,6 +731,9 @@ def main() -> None:
                              available_stock_labels=list(STOCK_FILES))
     refresh_stock_files()
     page = st.session_state.get("active_page", "首頁")
+    watchlist_message = st.session_state.pop("watchlist_action_message", None)
+    if watchlist_message:
+        st.success(watchlist_message)
     if page == "查詢股票":  # backward-compatible return from an old session
         navigate("個股儀表板")
         page = "個股儀表板"
@@ -619,6 +742,12 @@ def main() -> None:
         return
     if page == "登入":
         render_login(navigate)
+        return
+    if page == "我的最愛":
+        inject_styles()
+        scroll_to_top(st.session_state.pop("scroll_to_top", False))
+        render_watchlist_sidebar(list(STOCK_FILES), st.session_state.get("selected_stock", ""), navigate, page)
+        render_watchlist_page(list(STOCK_FILES), navigate)
         return
 
     inject_styles()

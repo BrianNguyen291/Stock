@@ -90,9 +90,20 @@ def _google_is_configured() -> bool:
 
 def render_logout() -> None:
     if st.user.get("is_logged_in"):
-        st.button("登出", on_click=st.logout)
+        st.button(
+            "登出",
+            icon=":material/logout:",
+            on_click=st.logout,
+            use_container_width=True,
+        )
     else:
-        st.button("登出", on_click=st.session_state.pop, args=(TEST_SESSION_KEY, None))
+        st.button(
+            "登出",
+            icon=":material/logout:",
+            on_click=st.session_state.pop,
+            args=(TEST_SESSION_KEY, None),
+            use_container_width=True,
+        )
 
 
 def render_auth(on_success=None) -> None:
