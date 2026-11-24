@@ -12,11 +12,20 @@ from comparison import (
     rank_stocks,
     risk_return_chart,
     risk_return_points,
+    watchlist_merge_button_label,
 )
 
 
 def _stock(dates, closes):
     return pd.DataFrame({"date": pd.to_datetime(dates), "close": closes})
+
+
+def test_watchlist_merge_button_is_empty_before_merge_and_filled_after():
+    selected = ["1101 台泥", "1216 統一"]
+
+    assert watchlist_merge_button_label(selected, [], logged_in=True) == "☆ 載入並合併到我的最愛"
+    assert watchlist_merge_button_label(selected, ["1101", "1216"], logged_in=True) == "⭐ 已加入我的最愛"
+    assert watchlist_merge_button_label(selected, ["1101"], logged_in=True) == "☆ 載入並合併到我的最愛"
 
 
 class ComparisonTests(unittest.TestCase):
