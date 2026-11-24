@@ -39,6 +39,25 @@ RANKING_METRICS = {
 DEFAULT_RANKING_METRIC = "區間報酬率(%)"
 
 
+def watchlist_merge_button_label(
+    selected_labels: list[str],
+    favorite_ids: list[str],
+    *,
+    logged_in: bool,
+) -> str:
+    """依目前比較選取與最愛清單，回傳空星／亮星按鈕文字。"""
+    if not logged_in:
+        return "☆ 載入並合併到我的最愛"
+    selected_ids = {
+        label.split(" ", 1)[0]
+        for label in selected_labels
+    }
+    favorite_set = set(favorite_ids)
+    if selected_ids and selected_ids.issubset(favorite_set):
+        return "⭐ 已加入我的最愛"
+    return "☆ 載入並合併到我的最愛"
+
+
 def filter_period(data: pd.DataFrame, start=None, end=None) -> pd.DataFrame:
     """取出 start～end（含）之間的資料列，未指定則不限制。"""
     frame = data
@@ -198,34 +217,52 @@ def render_comparison(
         st.session_state["comparison_selected"] = labels[:MIN_STOCKS]
 
     with st.container(key="dashboard_filters"):
-        if st.button("⭐ 載入並合併到我的最愛", key="comparison_watchlist_add"):
+        database = StockDatabase()
+        user_id, favorite_ids = current_watchlist(database)
+        selected_before_add = list(st.session_state.get("comparison_selected", []))
+        merge_label = watchlist_merge_button_label(
+            selected_before_add,
+            favorite_ids,
+            logged_in=user_id is not None,
+        )
+
+        def merge_selected_watchlist() -> None:
             try:
-                database = StockDatabase()
                 user_id, favorite_ids = current_watchlist(database)
                 if user_id is None:
-                    st.info("請先登入後再使用最愛股票比較")
-                else:
-                    selected_before_add = list(st.session_state.get("comparison_selected", []))
-                    if not selected_before_add:
-                        st.warning("請先選擇要加入最愛的比較股票")
-                    else:
-                        added = []
-                        already_saved = []
-                        for label in selected_before_add:
-                            stock_id = label.split(" ", 1)[0]
-                            if stock_id in favorite_ids:
-                                already_saved.append(stock_id)
-                            elif database.add_to_watchlist(user_id, stock_id):
-                                added.append(stock_id)
-                                favorite_ids.append(stock_id)
+                    st.session_state["watchlist_action_message"] = "請先登入後再使用最愛股票比較"
+                    return
+                selected_labels = list(st.session_state.get("comparison_selected", []))
+                if not selected_labels:
+                    st.session_state["watchlist_action_message"] = "請先選擇要加入最愛的比較股票"
+                    return
 
-                        if added:
-                            st.success(f"已合併加入：{'、'.join(added)}；原有最愛保持不變")
-                        elif already_saved:
-                            st.info(f"選取股票已全部在最愛清單中：{'、'.join(already_saved)}")
-                        st.rerun()
+                added = []
+                already_saved = []
+                for label in selected_labels:
+                    stock_id = label.split(" ", 1)[0]
+                    if stock_id in favorite_ids:
+                        already_saved.append(stock_id)
+                    elif database.add_to_watchlist(user_id, stock_id):
+                        added.append(stock_id)
+                        favorite_ids.append(stock_id)
+
+                if added:
+                    st.session_state["watchlist_action_message"] = (
+                        f"已合併加入：{'、'.join(added)}；原有最愛保持不變"
+                    )
+                elif already_saved:
+                    st.session_state["watchlist_action_message"] = (
+                        f"選取股票已全部在最愛清單中：{'、'.join(already_saved)}"
+                    )
             except (OSError, sqlite3.Error, ValueError):
-                st.error("目前無法載入最愛股票，請稍後再試。")
+                st.session_state["watchlist_action_message"] = "目前無法載入最愛股票，請稍後再試"
+
+        st.button(
+            merge_label,
+            key="comparison_watchlist_add",
+            on_click=merge_selected_watchlist,
+        )
 
         selected = st.multiselect(
             "選擇比較股票",
