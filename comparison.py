@@ -230,33 +230,18 @@ def render_comparison(
             try:
                 user_id, favorite_ids = current_watchlist(database)
                 if user_id is None:
-                    st.session_state["watchlist_action_message"] = "請先登入後再使用最愛股票比較"
+                    st.info("請先登入後再使用最愛股票比較")
                     return
                 selected_labels = list(st.session_state.get("comparison_selected", []))
                 if not selected_labels:
-                    st.session_state["watchlist_action_message"] = "請先選擇要加入最愛的比較股票"
+                    st.warning("請先選擇要加入最愛的比較股票")
                     return
-
-                added = []
-                already_saved = []
                 for label in selected_labels:
                     stock_id = label.split(" ", 1)[0]
-                    if stock_id in favorite_ids:
-                        already_saved.append(stock_id)
-                    elif database.add_to_watchlist(user_id, stock_id):
-                        added.append(stock_id)
+                    if stock_id not in favorite_ids and database.add_to_watchlist(user_id, stock_id):
                         favorite_ids.append(stock_id)
-
-                if added:
-                    st.session_state["watchlist_action_message"] = (
-                        f"已合併加入：{'、'.join(added)}；原有最愛保持不變"
-                    )
-                elif already_saved:
-                    st.session_state["watchlist_action_message"] = (
-                        f"選取股票已全部在最愛清單中：{'、'.join(already_saved)}"
-                    )
             except (OSError, sqlite3.Error, ValueError):
-                st.session_state["watchlist_action_message"] = "目前無法載入最愛股票，請稍後再試"
+                st.warning("目前無法載入最愛股票，請稍後再試")
 
         st.button(
             merge_label,

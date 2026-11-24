@@ -134,7 +134,7 @@ def test_guest_is_asked_to_log_in(page):
     assert not app.dataframe
 
 
-def test_logged_in_user_adds_holding_and_sees_profit(page):
+def test_logged_in_user_adds_holding_and_sees_profit(page, monkeypatch):
     database, app = page
     app.session_state[auth.TEST_SESSION_KEY] = True
     app.run()
@@ -145,7 +145,7 @@ def test_logged_in_user_adds_holding_and_sees_profit(page):
     app.number_input(key="portfolio_lots").set_value(2.0)
     app.button(key="portfolio_submit").click().run()
     assert not app.exception
-    assert "已加入 2330 台積電" in app.success[0].value
+    assert not app.success
 
     user_id = database.upsert_user("local_test", "test")
     assert [(h["stock_id"], h["shares"], h["purchase_price"]) for h in database.list_holdings(user_id)] == [
@@ -158,8 +158,18 @@ def test_logged_in_user_adds_holding_and_sees_profit(page):
     assert metrics["報酬率"] == "+10.00%"
     assert len(app.get("vega_lite_chart")) == 1  # 持股比重圓餅圖
 
-    app.button(key="portfolio_remove").click().run()
+    assert app.dataframe[0].value.columns[-1] == "刪除"
+    assert not any(select.label == "刪除持股" for select in app.selectbox)
+    import portfolio
+
+    holding_ids = [holding["id"] for holding in database.list_holdings(user_id)]
+    with monkeypatch.context() as callback_context:
+        callback_context.setattr(portfolio.st, "session_state", {"portfolio_remove_click": {"row": 0}})
+        portfolio._remove_selected(database, user_id, holding_ids)
+    app.run()
+    assert not app.exception
     assert database.list_holdings(user_id) == []
+    assert "尚未記錄持股" in app.info[0].value
 
 
 def test_missing_price_shows_error_without_saving(page):

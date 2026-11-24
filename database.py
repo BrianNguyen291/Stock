@@ -176,6 +176,21 @@ class StockDatabase:
                     threshold REAL NOT NULL CHECK(threshold > 0)
                 );
                 CREATE INDEX IF NOT EXISTS alerts_by_user ON alerts(user_id);
+                CREATE TABLE IF NOT EXISTS alert_notifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    event_key TEXT NOT NULL,
+                    stock_label TEXT NOT NULL,
+                    condition TEXT NOT NULL,
+                    trade_date TEXT NOT NULL,
+                    actual TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    is_read INTEGER NOT NULL DEFAULT 0,
+                    dismissed INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE (user_id, event_key)
+                );
+                CREATE INDEX IF NOT EXISTS notifications_by_user
+                    ON alert_notifications(user_id, dismissed, trade_date DESC, id DESC);
             """)
 
     @contextmanager
@@ -290,6 +305,42 @@ class StockDatabase:
                 FROM alerts WHERE user_id = ? ORDER BY stock_id, id
             """, (user_id,))
             return [dict(row) for row in rows]
+
+    def save_alert_notifications(self, user_id: int, events: list[dict]) -> None:
+        with self.connect() as connection:
+            connection.executemany("""
+                INSERT INTO alert_notifications(user_id, event_key, stock_label, condition, trade_date, actual)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, event_key) DO NOTHING
+            """, [
+                (user_id, event["event_key"], event["label"], event["condition"],
+                 _date(event["date"]), event["actual"])
+                for event in events
+            ])
+
+    def list_alert_notifications(self, user_id: int) -> list[dict]:
+        with self.connect() as connection:
+            connection.row_factory = sqlite3.Row
+            return [dict(row) for row in connection.execute("""
+                SELECT id, stock_label, condition, trade_date, actual, created_at, is_read
+                FROM alert_notifications WHERE user_id = ? AND dismissed = 0
+                ORDER BY trade_date DESC, created_at DESC, id DESC
+            """, (user_id,))]
+
+    def read_alert_notifications(self, user_id: int, notification_ids: list[int]) -> None:
+        with self.connect() as connection:
+            connection.executemany(
+                "UPDATE alert_notifications SET is_read = 1 WHERE user_id = ? AND id = ?",
+                [(user_id, notification_id) for notification_id in notification_ids],
+            )
+
+    def dismiss_alert_notification(self, user_id: int, notification_id: int) -> None:
+        # Retain the event key so the same alert/date cannot recreate a dismissed notification.
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE alert_notifications SET dismissed = 1, is_read = 1 WHERE user_id = ? AND id = ?",
+                (user_id, notification_id),
+            )
 
     def upsert_prices(self, data: pd.DataFrame, source: str = "api", *, only_if_empty: bool = False) -> int:
         """先驗證整批，再以單一交易寫入股票、股價及成功紀錄。"""

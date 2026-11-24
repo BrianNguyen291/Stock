@@ -18,7 +18,7 @@ def current_watchlist(database: StockDatabase | None = None) -> tuple[int | None
         watchlist = (database or StockDatabase()).list_watchlist(user_id)
         return user_id, watchlist
     except (OSError, sqlite3.Error, ValueError):
-        st.sidebar.error("目前無法載入我的最愛")
+        st.error("目前無法載入我的最愛")
         return None, []
 
 
@@ -42,27 +42,23 @@ def render_watchlist_toggle(stock_id: str, latest_name: str) -> None:
         try:
             user_id = auth.current_user_id()
             if user_id is None:
-                st.session_state["watchlist_action_message"] = "請先登入後再加入最愛"
+                st.session_state["watchlist_action_error"] = "請先登入後再加入最愛"
                 return
             database = StockDatabase()
-            if database.add_to_watchlist(user_id, stock_id):
-                st.session_state["watchlist_action_message"] = f"已加入最愛：{stock_id} {latest_name}"
-            else:
-                st.session_state["watchlist_action_message"] = f"{stock_id} 已在最愛清單中"
+            database.add_to_watchlist(user_id, stock_id)
         except (OSError, sqlite3.Error, ValueError):
-            st.session_state["watchlist_action_message"] = "目前無法加入最愛，請稍後再試"
+            st.session_state["watchlist_action_error"] = "目前無法加入最愛，請稍後再試"
 
     def remove_favorite() -> None:
         try:
             user_id = auth.current_user_id()
             if user_id is None:
-                st.session_state["watchlist_action_message"] = "請先登入後再移除最愛"
+                st.session_state["watchlist_action_error"] = "請先登入後再移除最愛"
                 return
             database = StockDatabase()
             database.remove_from_watchlist(user_id, stock_id)
-            st.session_state["watchlist_action_message"] = f"已從最愛移除：{stock_id} {latest_name}"
         except (OSError, sqlite3.Error, ValueError):
-            st.session_state["watchlist_action_message"] = "目前無法移除最愛，請稍後再試"
+            st.session_state["watchlist_action_error"] = "目前無法移除最愛，請稍後再試"
 
     try:
         user_id = auth.current_user_id()
@@ -272,7 +268,6 @@ def render_watchlist_page(
                 ):
                     try:
                         database.remove_from_watchlist(user_id, favorite_id)
-                        st.success(f"已移除最愛 {favorite_label}")
                         st.rerun()
                     except (OSError, sqlite3.Error, ValueError):
                         st.error("目前無法移除最愛，請稍後再試")

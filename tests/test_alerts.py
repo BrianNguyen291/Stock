@@ -147,18 +147,17 @@ def test_triggered_alert_shows_stock_condition_and_actual_value(page):
     app.number_input(key="alert_price_price_above_2330").set_value(110.0)
     app.button(key="alert_submit").click().run()
     assert not app.exception
-    assert app.success[0].value == "已設定 2330 台積電：收盤價突破 110.00 元。"
+    assert not app.success
 
-    warning = app.warning[0].value
-    assert "2330 台積電" in warning
-    assert "收盤價突破 110.00 元" in warning
-    assert "收盤價 120.00 元" in warning
+    assert not app.warning
     table = app.dataframe[0].value
     assert table["提醒條件（門檻）"].tolist() == ["收盤價突破 110.00 元"]
     assert table["狀態"].tolist() == ["🔔 已觸發"]
+    assert table.columns[-1] == "刪除"
+    assert not any(select.label == "刪除提醒" for select in app.selectbox)
 
 
-def test_volume_alert_and_untriggered_alert(page):
+def test_volume_alert_and_untriggered_alert(page, monkeypatch):
     database, app = page
     app.run()
     app.radio(key="alert_kind").set_value("volume_above").run()
@@ -169,8 +168,18 @@ def test_volume_alert_and_untriggered_alert(page):
 
     table = app.dataframe[0].value
     assert table["狀態"].tolist() == ["🔔 已觸發", "未觸發"]
-    assert "成交量 5,000 張，為 20 日均量 1,200 張的 4.17 倍" in app.warning[0].value
+    assert "成交量 5,000 張，為 20 日均量 1,200 張的 4.17 倍" in table["實際數值"].iloc[0]
+    assert not app.warning
 
     user_id = database.upsert_user("local_test", "test")
-    app.button(key="alert_remove").click().run()
-    assert len(database.list_alerts(user_id)) == 1
+    saved_alerts = database.list_alerts(user_id)
+    from alerts import _remove_alert
+    import alerts
+
+    with monkeypatch.context() as callback_context:
+        callback_context.setattr(alerts.st, "session_state", {"alert_remove_click": {"row": 1}})
+        _remove_alert(database, user_id, [alert["id"] for alert in saved_alerts])
+    app.run()
+    assert not app.exception
+    assert [alert["id"] for alert in database.list_alerts(user_id)] == [saved_alerts[0]["id"]]
+    assert app.dataframe[0].value["狀態"].tolist() == ["🔔 已觸發"]

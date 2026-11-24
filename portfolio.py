@@ -185,21 +185,25 @@ def _render_add_form(database: StockDatabase, user_id: int, stock_labels: list[s
     except (OSError, sqlite3.Error):
         st.error("持股儲存失敗，請稍後再試。")
         return
-    st.success(f"已加入 {label}：{shares / LOT_SIZE:,.3f} 張，買進價 {price:,.2f} 元。")
 
 
-def _remove_selected(database: StockDatabase, user_id: int) -> None:
-    holding_id = st.session_state.get("portfolio_remove_choice")
-    if holding_id is not None:
-        database.remove_holding(user_id, holding_id)
+def _remove_selected(database: StockDatabase, user_id: int, holding_ids: list[int]) -> None:
+    click = st.session_state.get("portfolio_remove_click")
+    if click is None:
+        return
+    try:
+        database.remove_holding(user_id, holding_ids[click["row"]])
+    except (OSError, sqlite3.Error, ValueError):
+        st.error("持股刪除失敗，請稍後再試。")
 
 
-def _render_overview(summary: pd.DataFrame) -> None:
+def _render_totals(summary: pd.DataFrame) -> None:
     if summary.empty:
         st.info("尚未記錄持股，請在下方輸入買進價、張數與日期。")
         return
     totals = portfolio_totals(summary)
-    cost_col, value_col, pnl_col, return_col = st.columns(4)
+    cards = st.container(key="dashboard_summary")
+    cost_col, value_col, pnl_col, return_col = cards.columns(4)
     cost_col.metric("總成本（元）", _money(totals["cost"]))
     value_col.metric("目前市值（元）", _money(totals["market_value"]))
     # delta_color="inverse"：正數顯示紅色，符合台股漲紅跌綠。
@@ -210,6 +214,10 @@ def _render_overview(summary: pd.DataFrame) -> None:
     if totals["unpriced"]:
         st.warning(f'{totals["unpriced"]} 筆持股查無行情，未計入總計與比重。')
 
+
+def _render_overview(summary: pd.DataFrame, database: StockDatabase, user_id: int) -> None:
+    if summary.empty:
+        return
     table = pd.DataFrame({
         "股票": summary["label"],
         "買進日期": summary["purchase_date"],
@@ -221,12 +229,22 @@ def _render_overview(summary: pd.DataFrame) -> None:
         "市值（元）": summary["market_value"],
         "未實現損益（元）": summary["unrealized"],
         "報酬率（%）": summary["return_pct"],
+        "刪除": ["刪除"] * len(summary),
     })
     styled = table.style.format({
         "買進價": "{:,.2f}", "張數": "{:,.3f}", "成本（元）": "{:,.0f}", "最新收盤價": "{:,.2f}",
         "市值（元）": "{:,.0f}", "未實現損益（元）": "{:+,.0f}", "報酬率（%）": "{:+.2f}",
     }, na_rep="-").map(_pnl_color, subset=["未實現損益（元）", "報酬率（%）"])
-    st.dataframe(styled, hide_index=True, use_container_width=True)
+    st.dataframe(
+        styled, hide_index=True, use_container_width=True,
+        column_config={
+            "刪除": st.column_config.ButtonColumn(
+                "刪除", width="small", type="secondary",
+                key="portfolio_remove_click", on_click=_remove_selected,
+                args=(database, user_id, summary["id"].tolist()),
+            ),
+        },
+    )
     st.caption("損益以最新收盤價（未還原）計算，未計手續費、證交稅與股利。")
 
     weights = position_weights(summary)
@@ -253,8 +271,7 @@ def render_portfolio(stocks: dict[str, pd.DataFrame], navigate=None, *, database
     by_id = frames_by_stock_id(stocks)
     stock_labels = [label for label, frame in stocks.items() if not frame.empty]
 
-    # 總覽排在最上方，但等表單處理完才填入，剛加入的持股會立即出現。
-    overview = st.container()
+    totals_area = st.container()
     if stock_labels:
         _render_add_form(database, user_id, stock_labels)
     else:
@@ -262,18 +279,8 @@ def render_portfolio(stocks: dict[str, pd.DataFrame], navigate=None, *, database
     try:
         summary = holding_summary(database.list_holdings(user_id), by_id)
     except (OSError, sqlite3.Error):
-        overview.error("目前無法讀取持股，請稍後再試。")
+        st.error("目前無法讀取持股，請稍後再試。")
         return
-    with overview:
-        _render_overview(summary)
-
-    if summary.empty:
-        return
-    labels = {
-        row.id: f"{row.label}｜{row.purchase_date} 買 {row.shares / LOT_SIZE:,.3f} 張 @ {row.purchase_price:,.2f}"
-        for row in summary.itertuples()
-    }
-    pick_col, button_col = st.columns([5, 1.2], vertical_alignment="bottom")
-    pick_col.selectbox("刪除持股", list(labels), format_func=labels.get, key="portfolio_remove_choice")
-    button_col.button("刪除", key="portfolio_remove", on_click=_remove_selected,
-                      args=(database, user_id), use_container_width=True)
+    with totals_area:
+        _render_totals(summary)
+    _render_overview(summary, database, user_id)

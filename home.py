@@ -10,6 +10,7 @@ import requests
 from auth import current_identity, render_auth, render_logout
 from database import StockDatabase
 from market_map import render_market_map
+from notifications import render_notification_bell
 
 
 # 全站共用的設計語彙：膠囊按鈕、大圓角卡片；儀表板白底，首頁與登入頁在下方改用黑底。
@@ -114,6 +115,10 @@ PAGE_STYLE = f"""
 }}
 .st-key-market_profile [data-testid="stPopoverButton"] {{
   width: 2.5rem; height: 2.5rem; padding: 0; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+}}
+.st-key-market_profile [data-testid="stPopoverButton"] > div {{
+  margin: 0; gap: 0; max-width: 100%; justify-content: center;
 }}
 .st-key-market_profile [data-testid="stPopoverButton"] [data-testid="stMarkdownContainer"] {{
   position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%);
@@ -406,7 +411,7 @@ def _profile_details(identity, navigate=None):
 
 def _header(navigate, *, back=False):
     with st.container(key="market_header"):
-        brand, links, action = st.columns([1, 2, 1], vertical_alignment="center")
+        brand, links, action, notifications = st.columns([1, 2, 1, .35], vertical_alignment="center")
         brand.html("""
         <div class="brand">
           <span class="brand-mark" aria-hidden="true">⌁</span>
@@ -426,6 +431,8 @@ def _header(navigate, *, back=False):
                         _profile_details(identity, navigate)
             else:
                 st.button("登入", on_click=navigate, args=("登入",))
+        with notifications:
+            render_notification_bell()
 
 
 def _render_ticker(quotes):

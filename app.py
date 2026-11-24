@@ -12,7 +12,8 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from alerts import render_alert_banner, render_alerts
+from alerts import render_alerts
+from notifications import render_notification_bell
 from charts import MA_WINDOWS, TRADINGVIEW_HEIGHT, tradingview_chart, volume_chart
 from comparison import render_comparison
 from crawler import crawl
@@ -20,7 +21,7 @@ from database import StockDatabase
 from home import DESIGN_TOKENS, render_home, render_login
 from portfolio import render_portfolio
 from stock_lookup import export_table, excel_bytes, perform_stock_search, search_stock_candidates, resolve_exact_stock_query
-from watchlist import render_watchlist_sidebar, render_watchlist_toggle, render_watchlist_page
+from watchlist import current_watchlist, render_watchlist_toggle, render_watchlist_page
 
 
 DATA_DIR = Path(__file__).parent
@@ -316,7 +317,13 @@ def inject_styles() -> None:
             background: var(--surface-hover);
             transform: translateY(-1px);
         }}
-        .st-key-dashboard_date [data-testid="stPopoverButton"] {{width: 2.5rem; padding: 0;}}
+        .st-key-dashboard_date [data-testid="stPopoverButton"] {{
+            width: 2.5rem; padding: 0;
+            display: flex; align-items: center; justify-content: center;
+        }}
+        .st-key-dashboard_date [data-testid="stPopoverButton"] > div {{
+            margin: 0; gap: 0; max-width: 100%; justify-content: center;
+        }}
         .st-key-dashboard_date [data-testid="stPopoverButton"] [data-testid="stMarkdownContainer"] {{
             position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%);
         }}
@@ -351,8 +358,11 @@ def inject_styles() -> None:
             .st-key-dashboard_toolbar [data-testid="stColumn"]:has(.st-key-dashboard_date) {{
                 flex: 0 0 auto; width: auto; min-width: 0;
             }}
-            .st-key-dashboard_toolbar [data-testid="stColumn"]:last-child {{
-                flex: 1 1 100%; width: auto; min-width: 0;
+            .st-key-dashboard_toolbar [data-testid="stColumn"]:has([role="radiogroup"]) {{
+                flex: 1 1 100%; width: auto; min-width: 0; order: 3;
+            }}
+            .st-key-dashboard_toolbar [data-testid="stColumn"]:has(.st-key-notification_bell) {{
+                flex: 0 0 2.5rem; width: 2.5rem; min-width: 0; order: 2;
             }}
             .st-key-dashboard_toolbar [role="radiogroup"] {{justify-content: flex-start;}}
             .st-key-dashboard_filters [data-testid="stColumn"] {{
@@ -372,6 +382,40 @@ def inject_styles() -> None:
         [data-testid="stMetricLabel"] {{font-size: .84rem; color: var(--dim);}}
         [data-testid="stMetricValue"] {{
             font-size: 1.7rem; font-weight: 500; letter-spacing: -.02em; font-variant-numeric: tabular-nums;
+        }}
+        .st-key-dashboard_summary [data-testid="stMetric"] {{
+            box-sizing: border-box; height: 120px; container-type: inline-size;
+        }}
+        .st-key-dashboard_summary [data-testid="stMetricValue"] {{font-size: clamp(.85rem, 10cqi, 1.7rem);}}
+        @media (min-width: 861px) {{
+            .st-key-dashboard_summary [data-testid="stHorizontalBlock"]:has(.hero) {{
+                display: grid; grid-template-columns: 2.2fr repeat(4, minmax(0, 1fr));
+                grid-template-rows: max-content; align-items: stretch;
+                align-content: center; min-height: 120px;
+            }}
+            .st-key-dashboard_summary:has(.hero) [data-testid="stColumn"] {{width: auto; min-width: 0;}}
+            .st-key-dashboard_summary:has(.hero) [data-testid="stColumn"]:not(:has(.hero)) {{
+                contain: size; min-width: 0; align-self: stretch; margin-block: -.5rem;
+                translate: 0 6px;
+                background: var(--surface); border-radius: 16px;
+            }}
+            .st-key-dashboard_summary:has(.hero) [data-testid="stColumn"]:not(:has(.hero)) > div,
+            .st-key-dashboard_summary:has(.hero) [data-testid="stElementContainer"]:has(> [data-testid="stMetric"]) {{
+                height: 100%;
+            }}
+            .st-key-dashboard_summary:has(.hero) [data-testid="stMetric"] {{
+                height: 100%; padding: .5rem .9rem; background: transparent;
+            }}
+            .st-key-dashboard_summary:has(.hero) [data-testid="stMetricValue"] {{line-height: 1.15;}}
+            .st-key-dashboard_summary:has(.hero) [data-testid="stMetricDelta"] {{font-size: .8rem;}}
+        }}
+        @media (max-width: 860px) {{
+            .st-key-dashboard_summary [data-testid="stHorizontalBlock"] {{
+                display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+            }}
+            .st-key-dashboard_summary [data-testid="stColumn"] {{width: auto; min-width: 0;}}
+            .st-key-dashboard_summary [data-testid="stColumn"]:has(.hero) {{grid-column: 1 / -1;}}
+            .st-key-dashboard_summary [data-testid="stMetric"] {{padding-inline: .8rem;}}
         }}
         [data-testid="stDataFrame"] {{border-radius: 16px; overflow: hidden;}}
         [data-testid="stImage"] img, [data-testid="stPyplot"] img {{border-radius: 16px;}}
@@ -403,43 +447,6 @@ def scroll_to_top(requested: bool) -> None:
                 """,
                 height=1,
             )
-
-
-def render_queried_stock_history() -> None:
-    """Open a previously queried stock; never refetch TWSE from history picker."""
-    db = StockDatabase()
-    known = {item["stock_id"]: item for item in db.list_available_stocks()}
-    options = []
-    for code in reversed(db.list_auto_update_stocks()):
-        stock = known.get(code)
-        if stock is None:
-            continue
-        display_name = next(
-            (label for label in STOCK_FILES if label.split(" ", 1)[0] == code),
-            f'{code} {stock["stock_name"]}'.strip(),
-        )
-        options.append(display_name)
-
-    st.markdown("### 曾查詢的股票")
-    if not options:
-        st.info("尚無查詢紀錄，請使用上方搜尋框查詢股票。")
-        return
-
-    selected_code = str(st.session_state.get("queried_stock_choice", "")).split(" ", 1)[0]
-    selected_index = next(
-        (i for i, label in enumerate(options) if label.split(" ", 1)[0] == selected_code),
-        0,
-    )
-    picker, action = st.columns([5, 1.2], vertical_alignment="bottom")
-    with picker:
-        selection = st.selectbox(
-            "曾查詢的股票", options, index=selected_index,
-            key="queried_stock_choice", label_visibility="collapsed",
-        )
-    with action:
-        if st.button("查詢", key="queried_stock_open", type="primary", use_container_width=True):
-            navigate(DASHBOARD_STOCK_PAGE, selection)
-            st.rerun()
 
 
 def render_kline_tab(filtered: pd.DataFrame, stock_label: str, ma_keys: list[str], bollinger_key: str) -> None:
@@ -497,15 +504,18 @@ def render_single_stock(stocks: dict[str, pd.DataFrame], stock_label: str | None
     change_percent = latest["change_percent"] if previous is not None else None
     name = latest.get("stock_name") or stock_label
     # 標題與重點數字排成同一列，圖表與分頁才能在一個畫面內看完，不用往下捲。
-    hero, *metric_columns = st.columns([2.2, 1, 1, 1, 1.2], vertical_alignment="center")
+    summary = st.container(key="dashboard_summary")
+    hero, *metric_columns = summary.columns([2.2, 1, 1, 1, 1], vertical_alignment="center")
     hero.markdown(
         f'<div class="hero"><h1 style="margin:0">{name}（{latest["stock_id"]}）</h1>'
         f'<p style="margin:.4rem 0 0">{start_date} ～ {end_date}</p></div>',
         unsafe_allow_html=True,
     )
-    metric_columns[0].metric("最新收盤價", format_number(latest["close"]),
-                             f"{format_number(change)} ({format_number(change_percent, '%')})",
-                             delta_color="inverse")
+    metric_columns[0].metric(
+        "最新收盤價", format_number(latest["close"]),
+        f"{format_number(change)} ({format_number(change_percent, '%')})",
+        delta_color="inverse",
+    )
     metric_columns[1].metric("區間最高價", format_number(filtered["high"].max()))
     metric_columns[2].metric("區間最低價", format_number(filtered["low"].min()))
     metric_columns[3].metric("最新成交量（股）", format_number(latest.get("trade_volume")))
@@ -624,21 +634,15 @@ def _queue_dashboard_search(query: str | None = None) -> None:
 
 
 def render_dashboard_toolbar(page: str):
-    stock_labels = list(STOCK_FILES)
     selected_stock = st.session_state.get("selected_stock", "")
     date_slot = None
-    sidebar_choice, favorite_ids, _ = render_watchlist_sidebar(
-        stock_labels,
-        selected_stock,
-        navigate,
-        page,
-    )
+    _, favorite_ids = current_watchlist()
 
     with st.container(key="dashboard_toolbar"):
         if page in PAGES_WITHOUT_DATES:
-            menu, search, navigation = st.columns([1, 3, 6], vertical_alignment="center")
+            menu, search, navigation, notifications = st.columns([1, 3, 6, .7], vertical_alignment="center")
         else:
-            menu, search, dates, navigation = st.columns([1, 3, .55, 5.45], vertical_alignment="center")
+            menu, search, dates, navigation, notifications = st.columns([1, 3, .55, 5.45, .7], vertical_alignment="center")
             date_slot = dates.container(key="dashboard_date")
         with menu:
             with st.popover("選單", icon=":material/menu:"):
@@ -683,13 +687,16 @@ def render_dashboard_toolbar(page: str):
                 label_visibility="collapsed", max_chars=32,
                 on_change=_queue_dashboard_search,
             )
-        if st.session_state.get("dashboard_page") != page:
-            st.session_state["dashboard_page"] = page
+        selected_page = page if page in DASHBOARD_PAGES else None
+        if st.session_state.get("dashboard_page") != selected_page:
+            st.session_state["dashboard_page"] = selected_page
         navigation.radio(
             "前往", DASHBOARD_PAGES, key="dashboard_page", horizontal=True,
             label_visibility="collapsed",
             on_change=lambda: navigate(st.session_state["dashboard_page"]),
         )
+        with notifications:
+            render_notification_bell()
 
     query = str(st.session_state.get("dashboard_stock_query") or "").strip()
     if (query and not resolve_exact_stock_query(query)
@@ -711,32 +718,20 @@ def render_dashboard_toolbar(page: str):
                     )
     if update_requested:
         with st.spinner(f"正在從證交所更新 {len(STOCK_FILES)} 檔股票資料，請稍候…"):
-            updated, update_errors = update_all_stocks()
+            _, update_errors = update_all_stocks()
         load_dashboard_data.clear()
         if update_errors:
             st.error(f"更新完成，但 {len(update_errors)} 檔失敗。")
             for label, message in update_errors.items():
                 st.caption(f"{label}：{message}")
-        else:
-            st.success(f"已更新 {len(updated)} 檔股票。")
     return (selected_stock if selected_stock in STOCK_FILES else next(iter(STOCK_FILES), None)), date_slot
 
 
-def main() -> None:
-    # Complete any queued lookup before rendering UI. Success routes to the
-    # stock dashboard; failures rerun with a visible error and no stale overlay.
-    pending = st.session_state.pop("dashboard_pending_search", None)
-    if pending:
-        perform_stock_search(pending, navigate, days=180,
-                             available_stock_labels=list(STOCK_FILES))
+def render_page(page: str) -> None:
     refresh_stock_files()
-    page = st.session_state.get("active_page", "首頁")
-    watchlist_message = st.session_state.pop("watchlist_action_message", None)
-    if watchlist_message:
-        st.success(watchlist_message)
-    if page == "查詢股票":  # backward-compatible return from an old session
-        navigate("個股儀表板")
-        page = "個股儀表板"
+    watchlist_error = st.session_state.pop("watchlist_action_error", None)
+    if watchlist_error:
+        st.error(watchlist_error)
     if page == "首頁":
         render_home(list(STOCK_FILES), load_home_quotes(), navigate)
         return
@@ -746,7 +741,7 @@ def main() -> None:
     if page == "我的最愛":
         inject_styles()
         scroll_to_top(st.session_state.pop("scroll_to_top", False))
-        render_watchlist_sidebar(list(STOCK_FILES), st.session_state.get("selected_stock", ""), navigate, page)
+        render_dashboard_toolbar(page)
         render_watchlist_page(list(STOCK_FILES), navigate)
         return
 
@@ -759,8 +754,6 @@ def main() -> None:
     if error:
         st.error(error)
     stocks, errors = load_all_stocks()
-    if page != "價格提醒":
-        render_alert_banner(stocks, navigate)
     if page == "股票比較":
         render_comparison(STOCK_FILES, read_stock_data, date_slot=date_slot)
     elif page == "條件選股":
@@ -771,8 +764,37 @@ def main() -> None:
         render_alerts(stocks, navigate)
     else:
         render_single_stock(stocks, stock_label, date_slot)
-    if page == DASHBOARD_STOCK_PAGE:
-        render_queried_stock_history()
+
+
+def main() -> None:
+    # Complete any queued lookup before rendering UI. Success routes to the
+    # stock dashboard; failures rerun with a visible error and no stale overlay.
+    pending = st.session_state.pop("dashboard_pending_search", None)
+    if pending:
+        perform_stock_search(pending, navigate, days=180,
+                             available_stock_labels=list(STOCK_FILES))
+
+    page = st.session_state.get("active_page", "首頁")
+    if page == "查詢股票":  # backward-compatible return from an old session
+        navigate(DASHBOARD_STOCK_PAGE)
+        page = DASHBOARD_STOCK_PAGE
+
+    previous_page, slot = st.session_state.get("rendered_page_slot", (page, 0))
+    if page != previous_page:
+        slot = 1 - slot
+    st.session_state["rendered_page_slot"] = (page, slot)
+
+    # Streamlit keeps children of a container at the same position until the
+    # rerun finishes. Clear the old slot and mount the new page in an empty one.
+    if slot == 0:
+        content = st.container()
+        st.empty()
+    else:
+        st.empty()
+        content = st.container()
+    with content:
+        render_page(page)
+
 
 if __name__ == "__main__":
     main()
