@@ -12,7 +12,6 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
-import auth
 from database import StockDatabase
 from portfolio import LOT_SIZE, frames_by_stock_id, latest_row, signed_in_user_id
 
@@ -81,16 +80,16 @@ def evaluate_alerts(alerts: list[dict], stocks: dict[str, pd.DataFrame]) -> list
     return results
 
 
-def triggered_message(result: dict) -> str:
-    return f'🔔 **{result["label"]}**　{result["condition"]}　→　{result["date"]:%Y-%m-%d} {result["actual"]}'
-
-
 # ---------- 畫面 ----------
 
-def _remove_selected(database: StockDatabase, user_id: int) -> None:
-    alert_id = st.session_state.get("alert_remove_choice")
-    if alert_id is not None:
-        database.remove_alert(user_id, alert_id)
+def _remove_alert(database: StockDatabase, user_id: int, alert_ids: list[int]) -> None:
+    click = st.session_state.get("alert_remove_click")
+    if click is None:
+        return
+    try:
+        database.remove_alert(user_id, alert_ids[click["row"]])
+    except (OSError, sqlite3.Error, ValueError):
+        st.error("提醒刪除失敗，請稍後再試。")
 
 
 def _render_add_alert(database: StockDatabase, user_id: int, stocks: dict[str, pd.DataFrame]) -> None:
@@ -137,7 +136,7 @@ def _render_add_alert(database: StockDatabase, user_id: int, stocks: dict[str, p
     except (OSError, sqlite3.Error):
         st.error("提醒儲存失敗，請稍後再試。")
         return
-    st.success(f"已設定 {label}：{describe_condition(kind, float(threshold))}。")
+    st.rerun()
 
 
 def _status(result: dict) -> str:
@@ -147,62 +146,39 @@ def _status(result: dict) -> str:
 
 
 def render_alerts(stocks: dict[str, pd.DataFrame], navigate=None, *, database: StockDatabase | None = None) -> None:
-    """價格提醒頁：最上方列出已觸發的提醒，其次新增提醒，最後是所有提醒與門檻。"""
+    """價格提醒頁，提供新增條件及查看、刪除已設定的提醒。"""
     st.subheader(PAGE_NAME)
     user_id = signed_in_user_id(navigate, PAGE_NAME)
     if user_id is None:
         return
     database = database or StockDatabase()
-    triggered_area = st.container()
     _render_add_alert(database, user_id, stocks)
     try:
         results = evaluate_alerts(database.list_alerts(user_id), stocks)
     except (OSError, sqlite3.Error):
-        triggered_area.error("目前無法讀取提醒，請稍後再試。")
+        st.error("目前無法讀取提醒，請稍後再試。")
         return
-
-    with triggered_area:
-        fired = [result for result in results if result["triggered"]]
-        if fired:
-            st.markdown(f"**{len(fired)} 個提醒已觸發**")
-            for result in fired:
-                st.warning(triggered_message(result))
-        elif results:
-            st.success("目前沒有觸發的提醒。")
 
     if not results:
         st.info("尚未設定提醒。")
         return
     st.markdown("**我的提醒**")
-    st.dataframe(pd.DataFrame({
+    table = pd.DataFrame({
         "股票": [r["label"] for r in results],
         "提醒條件（門檻）": [r["condition"] for r in results],
         "資料日期": [f'{r["date"]:%Y-%m-%d}' if r["date"] else "-" for r in results],
         "實際數值": [r["actual"] or "-" for r in results],
         "狀態": [_status(r) for r in results],
-    }), hide_index=True, use_container_width=True)
+        "刪除": ["刪除"] * len(results),
+    })
+    st.dataframe(
+        table, hide_index=True, use_container_width=True,
+        column_config={
+            "刪除": st.column_config.ButtonColumn(
+                "刪除", width="small", type="secondary",
+                key="alert_remove_click", on_click=_remove_alert,
+                args=(database, user_id, [r["id"] for r in results]),
+            ),
+        },
+    )
     st.caption("以最新交易日的收盤價與成交量判斷；等於門檻不算觸發。")
-    labels = {r["id"]: f'{r["label"]}｜{r["condition"]}' for r in results}
-    pick_col, button_col = st.columns([5, 1.2], vertical_alignment="bottom")
-    pick_col.selectbox("刪除提醒", list(labels), format_func=labels.get, key="alert_remove_choice")
-    button_col.button("刪除", key="alert_remove", on_click=_remove_selected,
-                      args=(database, user_id), use_container_width=True)
-
-
-def render_alert_banner(stocks: dict[str, pd.DataFrame], navigate=None, *, database: StockDatabase | None = None) -> None:
-    """在其他儀表板頁面頂端簡短顯示已觸發的提醒；訪客或讀取失敗時不顯示任何東西。"""
-    try:
-        user_id = auth.current_user_id()
-        if user_id is None:
-            return
-        fired = [r for r in evaluate_alerts((database or StockDatabase()).list_alerts(user_id), stocks)
-                 if r["triggered"]]
-    except (OSError, sqlite3.Error, ValueError):
-        return
-    if not fired:
-        return
-    with st.container(border=True):
-        for result in fired:
-            st.markdown(triggered_message(result))
-        if navigate is not None:
-            st.button("查看價格提醒", on_click=navigate, args=(PAGE_NAME,), key="alert_banner_open")

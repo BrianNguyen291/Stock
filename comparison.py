@@ -209,20 +209,11 @@ def render_comparison(
                     if not selected_before_add:
                         st.warning("請先選擇要加入最愛的比較股票")
                     else:
-                        added = []
-                        already_saved = []
                         for label in selected_before_add:
                             stock_id = label.split(" ", 1)[0]
-                            if stock_id in favorite_ids:
-                                already_saved.append(stock_id)
-                            elif database.add_to_watchlist(user_id, stock_id):
-                                added.append(stock_id)
-                                favorite_ids.append(stock_id)
+                            if stock_id not in favorite_ids:
+                                database.add_to_watchlist(user_id, stock_id)
 
-                        if added:
-                            st.success(f"已合併加入：{'、'.join(added)}；原有最愛保持不變")
-                        elif already_saved:
-                            st.info(f"選取股票已全部在最愛清單中：{'、'.join(already_saved)}")
                         st.rerun()
             except (OSError, sqlite3.Error, ValueError):
                 st.error("目前無法載入最愛股票，請稍後再試。")
