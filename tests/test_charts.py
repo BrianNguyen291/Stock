@@ -248,3 +248,12 @@ def test_repository_data_tradingview(path):
     payload = chart_payload(load_data(path))
     json.dumps(payload, allow_nan=False)
     assert len(payload["indicators"]) == 8
+
+
+def test_html_restores_zoom_and_tab_after_overlay_toggle(sample):
+    # 勾選均線/布林通道會重新載入 iframe；縮放範圍與指標分頁須從 sessionStorage 還原，而非跳回預設 6 個月。
+    html = tradingview_chart(sample, title="2330 台積電")
+    script = html.split("const viewKey")[1]
+    assert "sessionStorage" in script
+    assert "setVisibleLogicalRange(saved.range)" in script
+    assert script.index("setVisibleLogicalRange(saved.range)") < script.index("subscribeVisibleLogicalRangeChange")
