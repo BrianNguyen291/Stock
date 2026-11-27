@@ -425,18 +425,41 @@ function fail(message) { document.body.innerHTML = '<div id="error"></div>'; doc
     const first = DATA.candles.find(function (c) { return c.time > start.toISOString().slice(0, 10); });
     chart.timeScale().setVisibleRange({ from: first.time, to: last });
   }
-  periods.forEach(function (p) {
+  // 勾選均線/布林通道時 Streamlit 會重新載入圖表；記住縮放範圍、期間與指標分頁，重載後還原。
+  // 鍵含標題與資料起訖日，換股票或日期區間時回到預設檢視。儲存失敗（如隱私模式）只是不記憶，圖表照常顯示。
+  const viewKey = "kline-view:" + DATA.title + ":" + DATA.candles[0].time + ":" + last;
+  function loadView() {
+    try { return JSON.parse(sessionStorage.getItem(viewKey)) || {}; } catch (e) { return {}; }
+  }
+  function saveView(patch) {
+    try { sessionStorage.setItem(viewKey, JSON.stringify(Object.assign({}, loadView(), patch))); } catch (e) { /* 不記憶 */ }
+  }
+  const saved = loadView();
+
+  periods.forEach(function (p, i) {
     const b = document.createElement("button"); b.textContent = p[0];
-    b.onclick = function () { showPeriod(p[1], b); };
+    b.onclick = function () { showPeriod(p[1], b); saveView({ period: i }); };
     document.getElementById("periods").appendChild(b);
   });
   DATA.indicators.forEach(function (t) {
     const b = document.createElement("button"); b.textContent = t.name;
-    b.onclick = function () { showIndicator(t.name); };
+    b.onclick = function () { showIndicator(t.name); saveView({ tab: t.name }); };
     document.getElementById("tabs").appendChild(b);
   });
-  if (DATA.indicators.length) showIndicator(DATA.indicators[0].name); else render(last);
-  showPeriod(6, document.querySelectorAll("#periods button")[2]);
+  const savedTab = DATA.indicators.find(function (t) { return t.name === saved.tab; });
+  if (DATA.indicators.length) showIndicator((savedTab || DATA.indicators[0]).name); else render(last);
+  const periodButtons = document.querySelectorAll("#periods button");
+  if (saved.range) {
+    periodButtons.forEach(function (b, i) { b.classList.toggle("on", i === saved.period); });
+    chart.timeScale().setVisibleLogicalRange(saved.range);
+  } else {
+    showPeriod(6, periodButtons[2]);
+    saveView({ period: 2 });
+  }
+  // 還原後才開始記錄，避免預設檢視蓋掉已存的範圍。
+  chart.timeScale().subscribeVisibleLogicalRangeChange(function (range) {
+    if (range) saveView({ range: { from: range.from, to: range.to } });
+  });
   new ResizeObserver(layoutPanes).observe(el);
 })();
 </script>
